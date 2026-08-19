@@ -1,0 +1,67 @@
+{
+  "$schema": "https://dsh.community/schemas/dsh-plugin-0.15.json",
+  "id": "io.github.fusu123fusu.dsh-tui-feishu",
+  "name": "dsh-tui-feishu",
+  "version": "0.1.0",
+  "manifestVersion": "0.15",
+  "facets": {
+    "host": {
+      "entry": "lib/index.js",
+      "apiVersion": "v1alpha1"
+    }
+  },
+  "requires": {
+    "contracts": [
+      {
+        "apiVersion": "commands.dsh/v1alpha1",
+        "kind": "Command"
+      }
+    ]
+  },
+  "permissions": [
+    {
+      "name": "commands.invoke",
+      "scope": "io.github.fusu123fusu.dsh-tui-feishu.status",
+      "reason": "在 TUI 里提供 /feishu 状态查询与扫码配对入口"
+    },
+    {
+      "name": "storage.local.read",
+      "scope": "io.github.fusu123fusu.dsh-tui-feishu",
+      "reason": "读取插件命名空间下的持久状态（会话映射、配对凭据、提醒）"
+    },
+    {
+      "name": "storage.local.write",
+      "scope": "io.github.fusu123fusu.dsh-tui-feishu",
+      "reason": "原子写入插件命名空间下的持久状态与诊断日志 bridge.log"
+    },
+    {
+      "name": "messages.observe.read",
+      "scope": "bridge-owned sessions",
+      "reason": "订阅本桥接创建的会话事件（assistant/chunk、tool/call、tool/result、turn/end）以渲染飞书流式卡片；不观察其他来源的会话"
+    }
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "io.github.fusu123fusu.dsh-tui-feishu.status",
+        "title": "Feishu 桥状态",
+        "description": "查看桥接状态与消息统计，/feishu pair 扫码创建飞书机器人"
+      }
+    ]
+  },
+  "subscriptions": [],
+  "license": "MIT",
+  "source": {
+    "repository": "https://github.com/FUSU123fusu/dsh-tui-feishu"
+  },
+  "overrides": [
+    {
+      "target": "x-ccch1mneyyy.tui.host-services",
+      "kind": "patch",
+      "description": "驱动 Community v0.15 契约之外的 dsh 框架服务：agents（create/resume/followup/cancel）、session/event 订阅、approval/request 瀑布（只回答本桥接的 agent，其余 next() 下放）、agentPresets 与 agentDefaultModel（均为软探测，缺失时降级）。网络面：仅出站长连接 + REST 到飞书开放平台，不开入站端口；配对时一次性尝试打开系统浏览器，失败则把链接作为命令文本返回。"
+    }
+  ],
+  "compat": {
+    "hosts": ["dsh-tui"]
+  }
+}
