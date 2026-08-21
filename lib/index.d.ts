@@ -42,6 +42,8 @@ export interface Config {
     readonly cardTtlMs?: number;
     /** Card copy language (default zh). */
     readonly locale?: 'zh' | 'en';
+    /** Resolve remote images in answers to Feishu image keys (default true). */
+    readonly resolveImages?: boolean;
     /** Allowed Feishu sender open ids; empty serves every p2p sender. */
     readonly allowedUsers?: string[];
 }

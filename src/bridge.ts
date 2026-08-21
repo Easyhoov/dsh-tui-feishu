@@ -95,6 +95,8 @@ export interface BridgeOptions {
   readonly modelControl?: ModelControl
   /** Scheduled reminders backing /remind, /reminders, /unremind. */
   readonly reminders?: ReminderStore
+  /** Resolve remote answer images to Feishu keys at turn end (default true). */
+  readonly resolveImages?: boolean
 }
 
 /** One chat's live turn-card state (bridge-owned). */
@@ -124,6 +126,38 @@ interface PendingApproval {
 const DEDUP_MAX = 512
 /** Card title cut-off. */
 const TITLE_CHARS = 28
+
+/** Cap how many remote images one turn resolves (upload is slow). */
+const MAX_RESOLVED_IMAGES = 6
+
+/**
+ * Replace remote image references in answer markdown with Feishu `img_key`s
+ * (download → upload). Failures keep the original URL. Only non-`img_` refs
+ * are touched.
+ */
+async function resolveContentImages(
+  content: string,
+  transport: LarkTransport,
+  logger: BridgeLogger,
+): Promise<string> {
+  if (!content.includes('![')) return content
+  const refs = [...content.matchAll(/!\[([^\]]*)\]\(([^)\s]+)\)/g)].slice(0, MAX_RESOLVED_IMAGES)
+  if (refs.length === 0) return content
+  let result = content
+  for (const match of refs) {
+    const url = match[2]
+    if (url === undefined || url.startsWith('img_')) continue
+    try {
+      const key = await transport.uploadImage(url)
+      if (key !== undefined && key !== '') {
+        result = result.replace(match[0], `![${match[1] ?? ''}](${key})`)
+      }
+    } catch (error: unknown) {
+      logger.warn(`image resolution failed (keeping URL): ${String(error)}`)
+    }
+  }
+  return result
+}
 
 /** Extract visible text from assistant message content blocks. */
 function assistantText(content: readonly unknown[] | undefined): string {
@@ -938,17 +972,24 @@ export class Bridge {
                   return model === undefined || model === '' ? {} : { model }
                 })(),
               }
+        // Resolve remote images in the final answer before the card closes.
+        const content =
+          this.options.resolveImages === false
+            ? state.content
+            : await resolveContentImages(state.content, this.options.transport, this.options.logger)
+        state.content = content
         this.turns.delete(chatId)
-        this.lastSnapshots.set(chatId, {
+        const finalSnapshot: CardSnapshot = {
           title: state.title,
-          content: state.content,
+          content,
           rows: state.rows,
           status,
           expanded: state.expanded,
           ...(footer === undefined ? {} : { footer }),
-        })
+        }
+        this.lastSnapshots.set(chatId, finalSnapshot)
         if (this.options.cards.isActive(chatId)) {
-          await this.options.cards.finalize(chatId, status, footer)
+          await this.options.cards.finalize(chatId, status, footer, finalSnapshot)
         } else {
           // The streaming card never opened (e.g. a rejected card payload):
           // don't lose the reply - fall back to plain text.

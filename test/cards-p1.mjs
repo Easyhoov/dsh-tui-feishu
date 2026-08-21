@@ -188,4 +188,74 @@ ok('bridge strips reasoning tags from answers and tracks tool duration', async (
   cards.dispose()
 })
 
+// ── bridge: remote images resolved to Feishu keys at turn end ──────────
+ok('bridge resolves remote images to img_keys at turn end', async () => {
+  const sent = []
+  const transport = {
+    connectionState: () => 'ready',
+    onMessage(h) {
+      this._h = h
+    },
+    onCardAction() {},
+    async sendText(chatId, text) {
+      sent.push({ chatId, text })
+    },
+    async sendCard(chatId, card) {
+      const id = `m${sent.length}`
+      sent.push({ chatId, card, id })
+      return id
+    },
+    async updateCard(messageId, card) {
+      sent.push({ patch: messageId, card })
+    },
+    async uploadImage(url) {
+      return url.startsWith('https://') ? 'img_v2_resolved_key' : undefined
+    },
+  }
+  const fakeAgent = { id: 's', followup() {}, cancel() {} }
+  const agentStore = {
+    get: id => (id === fakeAgent.id ? fakeAgent : undefined),
+    resume: async () => {
+      throw new Error('no log')
+    },
+    create: async sessionId => {
+      fakeAgent.id = sessionId
+      return fakeAgent
+    },
+  }
+  const logger = { info() {}, warn() {}, error() {} }
+  const cards = new StreamingCardManager(transport, { throttleMs: 1, logger })
+  const sessionMap = new SessionMap('/tmp/nonexistent/session-map.json')
+  const bridge = new Bridge({ transport, sessionMap, agentStore, cards, logger, defaultCwd: '/work' })
+  bridge.start()
+  const events = []
+  bridge.bindSessionEvents(listener => {
+    events.push(listener)
+    return () => {}
+  })
+
+  await transport._h({
+    messageId: 'msg-1',
+    chatId: 'chat',
+    chatType: 'p2p',
+    senderOpenId: 'owner',
+    text: 'show me',
+    mentions: [],
+  })
+  await sleep(20)
+  const sessionId = sessionMap.get('chat').sessionId
+  await events[0](sessionId, {
+    type: 'assistant/message',
+    data: { message: { content: [{ type: 'text', text: 'here: ![chart](https://x/y.png) ok' }] } },
+  })
+  await events[0](sessionId, { type: 'turn/end', data: { reason: { kind: 'done' } } })
+  await sleep(40)
+
+  const json = JSON.stringify(sent)
+  assert.ok(json.includes('img_v2_resolved_key'), 'remote image replaced with img_key')
+  assert.ok(!json.includes('https://x/y.png'), 'original URL gone from the card')
+  bridge.dispose()
+  cards.dispose()
+})
+
 console.log(`CARDS-P1 OK (${passed} checks)`)

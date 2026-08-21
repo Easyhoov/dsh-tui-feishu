@@ -115,6 +115,13 @@ export declare class LarkTransport {
     sendCard(chatId: string, card: unknown): Promise<string>;
     /** Update an already-sent card in place (silent: no unread notification). */
     updateCard(messageId: string, card: unknown): Promise<void>;
+    /**
+     * Download a remote image and upload it to Feishu (`im.v1.image.create`),
+     * resolving the platform `image_key` (or `undefined` on any failure - the
+     * caller keeps the original URL). Mirrors hermes-lark-streaming's
+     * download-then-upload flow.
+     */
+    uploadImage(url: string, timeoutMs?: number): Promise<string | undefined>;
     /** Fetch and cache the bot's own open id (`bot/v3/info`). */
     private resolveBotOpenId;
     /** Create a message in a chat; assert the API succeeded. */

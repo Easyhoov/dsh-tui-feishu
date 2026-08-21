@@ -100,8 +100,11 @@ export declare class StreamingCardManager {
      * metadata) and flush, then retire it. A terminal snapshot is staged even
      * when nothing is pending, so finished cards always render their final
      * state (status note / footer) rather than freezing mid-stream.
+     * `snapshot` (optional) overrides the staged base - used when the caller
+     * holds a newer version of the content than the last flush (e.g. image
+     * resolution at turn end).
      */
-    finalize(chatId: string, status: 'done' | 'error' | 'stopped', footer?: CardFooter): Promise<void>;
+    finalize(chatId: string, status: 'done' | 'error' | 'stopped', footer?: CardFooter, snapshot?: CardSnapshot): Promise<void>;
     /** Whether a chat currently has an active streaming card. */
     isActive(chatId: string): boolean;
     /** Message id of the active card, for button routing. */

@@ -91,6 +91,8 @@ TUI 里：
 - **白名单**：默认只服务扫码创建者（`allowedUsers` 配置可扩展）；飞书侧按钮回调同样校验操作者 open_id
 - **审批不会自动通过**：bridge 只回答自己创建的 agent 的 `approval/request`，其余 `next()` 下放给 TUI 自己的审批面板；无应答者时宿主按 fail-closed 处理
 - **凭据不落浏览器**：App Secret 只存在本机文件（0600，尽力而为）；二维码链接一次性、10 分钟过期
+- **工具详情脱敏**：工具参数/结果在上卡前经过脱敏（`key=secret`、`Authorization` 头、`--flag secret`、路径只留 basename），凭证不会出现在流式卡片或审批卡片上
+- **消息删除/撤回守卫**：patch 命中删除/撤回错误码后立即退休该卡片并转纯文本兜底，不会对不存在的消息无限重试
 - v1 只服务**私聊**；群消息静默忽略
 
 ## 配置项
@@ -102,6 +104,9 @@ TUI 里：
 | `dataDir` | 状态目录 | `$DSH_HOME/dsh-tui-feishu` |
 | `provider` / `model` | 桥接 agent 的模型路由 | 宿主默认 |
 | `cardThrottleMs` | 卡片 patch 节流 | 500 |
+| `cardTtlMs` | 无更新自动退休流式卡片的时长（ms） | 900000（15 分钟） |
+| `locale` | 卡片文案语言 `zh` / `en` | `zh` |
+| `resolveImages` | 回合结束时把答案里的远程图片上传为飞书 img_key | `true` |
 | `allowedUsers` | 允许的 sender open_id 白名单 | 扫码创建者 |
 
 ## 飞书端命令

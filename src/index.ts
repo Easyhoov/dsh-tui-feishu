@@ -69,6 +69,8 @@ export interface Config {
   readonly cardTtlMs?: number
   /** Card copy language (default zh). */
   readonly locale?: 'zh' | 'en'
+  /** Resolve remote images in answers to Feishu image keys (default true). */
+  readonly resolveImages?: boolean
   /** Allowed Feishu sender open ids; empty serves every p2p sender. */
   readonly allowedUsers?: string[]
 }
@@ -83,6 +85,7 @@ export const Config: z<Config> = z.object({
   cardThrottleMs: z.natural().min(1).required(false),
   cardTtlMs: z.natural().min(1000).required(false),
   locale: z.union([z.const('zh'), z.const('en')]).required(false),
+  resolveImages: z.boolean().required(false),
   allowedUsers: z.array(z.string()).required(false),
 })
 
@@ -430,6 +433,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       defaultCwd: config.defaultCwd ?? process.cwd(),
       modelControl,
       reminders,
+      ...(config.resolveImages === undefined ? {} : { resolveImages: config.resolveImages }),
       ...(allowed.length === 0 ? {} : { allowedUsers: allowed }),
     })
     bridgeRef = bridge

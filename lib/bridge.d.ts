@@ -90,6 +90,8 @@ export interface BridgeOptions {
     readonly modelControl?: ModelControl;
     /** Scheduled reminders backing /remind, /reminders, /unremind. */
     readonly reminders?: ReminderStore;
+    /** Resolve remote answer images to Feishu keys at turn end (default true). */
+    readonly resolveImages?: boolean;
 }
 /** One-line summary of a tool call for the activity rows. */
 export declare function toolRowSummary(name: string, argsJson: string): string;

@@ -364,11 +364,15 @@ export class StreamingCardManager {
    * metadata) and flush, then retire it. A terminal snapshot is staged even
    * when nothing is pending, so finished cards always render their final
    * state (status note / footer) rather than freezing mid-stream.
+   * `snapshot` (optional) overrides the staged base - used when the caller
+   * holds a newer version of the content than the last flush (e.g. image
+   * resolution at turn end).
    */
   async finalize(
     chatId: string,
     status: 'done' | 'error' | 'stopped',
     footer?: CardFooter,
+    snapshot?: CardSnapshot,
   ): Promise<void> {
     const card = this.active.get(chatId)
     if (card === undefined || card.closed) return
@@ -377,7 +381,7 @@ export class StreamingCardManager {
       clearTimeout(card.timer)
       card.timer = null
     }
-    const base = card.pending ?? card.lastFlushed
+    const base = snapshot ?? card.pending ?? card.lastFlushed
     if (base !== null) {
       card.pending = { ...base, status, ...(footer === undefined ? {} : { footer }) }
       await this.flush(card)

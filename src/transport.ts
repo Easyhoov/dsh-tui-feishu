@@ -355,9 +355,46 @@ export class LarkTransport {
     this.assertOk(response, 'im.v1.message.patch')
   }
 
+  /**
+   * Download a remote image and upload it to Feishu (`im.v1.image.create`),
+   * resolving the platform `image_key` (or `undefined` on any failure - the
+   * caller keeps the original URL). Mirrors hermes-lark-streaming's
+   * download-then-upload flow.
+   */
+  async uploadImage(url: string, timeoutMs = 10_000): Promise<string | undefined> {
+    let data: Buffer
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
+      try {
+        const response = await fetch(url, {
+          signal: controller.signal,
+          headers: { 'User-Agent': 'dsh-tui-feishu/0.2' },
+        })
+        if (!response.ok) return undefined
+        data = Buffer.from(await response.arrayBuffer())
+      } finally {
+        clearTimeout(timer)
+      }
+    } catch {
+      return undefined
+    }
+    // The platform caps uploads at 10 MB and rejects empty images.
+    if (data.length === 0 || data.length > 10 * 1024 * 1024) return undefined
+    try {
+      const response = await this.client.im.v1.image.create({
+        data: { image_type: 'message', image: data },
+      })
+      const key = response?.image_key
+      return key === undefined || key === '' ? undefined : key
+    } catch (error: unknown) {
+      this.logger?.warn(`image upload failed: ${String(error)}`)
+      return undefined
+    }
+  }
+
   /** Fetch and cache the bot's own open id (`bot/v3/info`). */
-  private async resolveBotOpenId(): Promise<void> {
-    const response = await this.client.request<{
+  private async resolveBotOpenId(): Promise<void> {    const response = await this.client.request<{
       code?: number
       msg?: string
       data?: { open_id?: string }
