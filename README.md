@@ -31,7 +31,7 @@ dsh plugin --profile dsh-tui add dsh-tui-feishu
 
 # 从源码：构建并打包后本地安装
 npm run verify && npm pack
-dsh plugin --profile dsh-tui add file:dsh-tui-feishu-0.1.0.tgz
+dsh plugin --profile dsh-tui add file:dsh-tui-feishu-0.2.0.tgz
 ```
 
 ## 扫码配对（推荐）
@@ -76,13 +76,23 @@ TUI 里：
 ```
 飞书消息 ──WSClient──> Bridge ──> sessionMap(chat↔session) ──> agents.create/resume + agent.followup
                                                                     │
-流式卡片 <── message.patch ── StreamingCardManager <── session/event 流（chunk/tool/turn/end）
+流式卡片 <── CardStream 引擎 <── session/event 流（chunk/tool/turn/end）
 审批卡片 <── Allow/Reject 按钮 ── approval/request 瀑布（只接自己的 agent）
 ```
 
-- `src/transport.ts` — Lark 传输层（`WSClient` 长连接 + `Client` REST + `registerApp` 扫码配对）
-- `src/bridge.ts` — 编排：消息→会话投递、session 事件→卡片折叠、审批/停止按钮路由、白名单
-- `src/cards.ts` — v1 卡片 JSON 构建 + 节流合并的流式 patch 管线
+卡片引擎二选一（`cardEngine` 配置）：
+
+- **`v1`（默认）**：`im.v1.message.patch` 全卡节流合并更新——兼容性最好
+- **`cardkit`**：卡片 JSON 2.0 打字机流式——`cardkit_create` 建实体 →
+  `batch_update` 面板结构更新 → `stream_element` 单元素打字机 → 完成时
+  `close_streaming` + 全量终态卡；按钮经 `behaviors[].type=callback` 触发与
+  v1 相同的 `card.action.trigger` 回调（已对照官方文档并真机验证）
+
+- `src/transport.ts` — Lark 传输层（`WSClient` 长连接 + `Client` REST + `registerApp` 扫码配对 + CardKit API）
+- `src/bridge.ts` — 编排：消息→会话投递、session 事件→卡片折叠、审批/停止/详情/会话切换按钮路由、白名单
+- `src/cards.ts` — v1 卡片构建 + 节流合并的流式 patch 管线（`CardStream` 接口定义）
+- `src/streaming/` — CardKit 2.0 引擎：`cardkit-builder.ts`（schema 2.0 构建）+ `cardkit-manager.ts`（流式生命周期）
+- `src/redact.ts` / `src/cardmd.ts` / `src/i18n.ts` / `src/tools.ts` — 脱敏、markdown 优化、双语文案、工具描述符
 - `src/session-map.ts` — 会话绑定与凭据的原子持久化（写临时文件 + rename）
 - `src/index.ts` — cordis 入口（`name`/`inject`/`Config`/`apply`）+ `/feishu` 命令
 
