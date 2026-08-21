@@ -185,6 +185,25 @@ ok('bridge drives the CardKit engine end to end', async () => {
   cards.dispose()
 })
 
+// ── thinking streams into its own element (typing effect) ──────────────
+ok('thinking streams into its own element (typing effect)', async () => {
+  const transport = fakeCardKitTransport()
+  const manager = new CardKitStreamingManager(transport, { throttleMs: 1, logger: { warn() {} } })
+  await manager.open('chat', 't')
+  manager.patch('chat', {
+    title: 't',
+    content: '',
+    rows: [{ kind: 'think', text: 'hmm' }],
+    status: 'working',
+  })
+  await sleep(40)
+  const streams = transport.calls.filter(call => call[0] === 'cardkitStreamElement')
+  const reasoning = streams.find(call => call[2] === 'reasoning_text')
+  assert.ok(reasoning !== undefined, 'thinking streamed to the reasoning text element')
+  assert.equal(reasoning[3], 'hmm')
+  manager.dispose()
+})
+
 // ── showReasoning=false hides thinking rows ────────────────────────────
 ok('showReasoning=false drops reasoning rows', async () => {
   const transport = fakeCardKitTransport()

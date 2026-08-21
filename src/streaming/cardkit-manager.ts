@@ -20,9 +20,9 @@ import type { LarkTransport } from '../transport.js'
 import {
   buildCardKitCompleteCard,
   buildCardKitStreamingCard,
-  buildReasoningPanel,
   buildToolPanel,
   KIT_ANSWER_ELEMENT,
+  KIT_REASONING_TEXT_ELEMENT,
 } from './cardkit-builder.js'
 
 /** One chat's live CardKit card state. */
@@ -88,7 +88,7 @@ export class CardKitStreamingManager implements CardStream {
       logger?: { warn(message: string): void }
     } = {},
   ) {
-    this.throttleMs = options.throttleMs ?? 200
+    this.throttleMs = options.throttleMs ?? 100
     this.cardTtlMs = options.cardTtlMs ?? 15 * 60_000
     this.locale = options.locale ?? 'zh'
     this.showReasoning = options.showReasoning ?? true
@@ -244,16 +244,16 @@ export class CardKitStreamingManager implements CardStream {
           card.hasToolPanel = true
         }
       }
-      if (this.showReasoning && thinkRows.length > 0 && rowsKey(thinkRows) !== rowsKey(prevThinkRows)) {
-        const panel = buildReasoningPanel(thinkRows, this.locale)
-        actions.push(partialUpdate(panel.element_id as string, {
-          header: panel.header,
-          elements: panel.elements,
-        }))
-      }
       if (actions.length > 0) {
         card.seq += 1
         await this.transport.cardkitBatchUpdate(card.cardId, actions, card.seq)
+      }
+      // Thinking text streams into its own element (typing effect while
+      // streaming_mode is on) - the same per-element streaming hermes uses.
+      if (this.showReasoning && thinkRows.length > 0 && rowsKey(thinkRows) !== rowsKey(prevThinkRows)) {
+        const text = thinkRows.map(row => row.text).join('\n').slice(0, 600) || ' '
+        card.seq += 1
+        await this.transport.cardkitStreamElement(card.cardId, KIT_REASONING_TEXT_ELEMENT, text, card.seq)
       }
       if (previous === null || snapshot.content !== previous.content) {
         card.seq += 1
