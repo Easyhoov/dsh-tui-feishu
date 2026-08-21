@@ -38,6 +38,8 @@ export interface Config {
     readonly model?: string;
     /** Streaming-card patch throttle in ms (default 500). */
     readonly cardThrottleMs?: number;
+    /** Retire a streaming card after this many ms without patch activity (default 900000 = 15min). */
+    readonly cardTtlMs?: number;
     /** Allowed Feishu sender open ids; empty serves every p2p sender. */
     readonly allowedUsers?: string[];
 }

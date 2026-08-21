@@ -65,6 +65,8 @@ export interface Config {
   readonly model?: string
   /** Streaming-card patch throttle in ms (default 500). */
   readonly cardThrottleMs?: number
+  /** Retire a streaming card after this many ms without patch activity (default 900000 = 15min). */
+  readonly cardTtlMs?: number
   /** Allowed Feishu sender open ids; empty serves every p2p sender. */
   readonly allowedUsers?: string[]
 }
@@ -77,6 +79,7 @@ export const Config: z<Config> = z.object({
   provider: z.string().required(false),
   model: z.string().required(false),
   cardThrottleMs: z.natural().min(1).required(false),
+  cardTtlMs: z.natural().min(1000).required(false),
   allowedUsers: z.array(z.string()).required(false),
 })
 
@@ -322,6 +325,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const transport = new LarkTransport(credentials, logger)
     const cards = new StreamingCardManager(transport, {
       ...(config.cardThrottleMs === undefined ? {} : { throttleMs: config.cardThrottleMs }),
+      ...(config.cardTtlMs === undefined ? {} : { cardTtlMs: config.cardTtlMs }),
       logger,
     })
     const sessionMap = new SessionMap(files.sessionMap)

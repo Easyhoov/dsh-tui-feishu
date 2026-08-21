@@ -17,6 +17,7 @@
  */
 
 import type { LarkTransport } from './transport.js'
+import { isTerminalMessageCode, markUnavailable } from './unavailable.js'
 
 /** Terminal status of a turn card. */
 export type CardStatus = 'working' | 'done' | 'stopped' | 'error'
@@ -218,11 +219,22 @@ interface ActiveCard {
   timer: ReturnType<typeof setTimeout> | null
   flushing: boolean
   closed: boolean
+  /** Epoch ms of the card's creation. */
+  openedAt: number
+  /** Epoch ms of the last staged snapshot. */
+  lastPatchAt: number
 }
+
+/** How often the idle-card sweep runs (also the test override knob). */
+const SWEEP_INTERVAL_MS = 60_000
 
 /**
  * Manages one active streaming card per chat: throttled, coalesced patches;
- * a failed patch never kills the stream (logged, latest snapshot retried).
+ * a failed patch never kills the stream (logged, latest snapshot retried),
+ * except when the platform reports the message as deleted/recalled - then
+ * the card is retired immediately and the message id remembered so nothing
+ * keeps patching a dead card. Cards idle for `cardTtlMs` are swept (the
+ * turn's reply then falls back to plain text).
  */
 export class StreamingCardManager {
   private readonly active = new Map<string, ActiveCard>()
@@ -230,14 +242,27 @@ export class StreamingCardManager {
    *  finished cards can still be re-rendered (the detail toggle). */
   private readonly lastMessageIds = new Map<string, string>()
   private readonly throttleMs: number
+  private readonly cardTtlMs: number
+  private readonly sweepTimer: ReturnType<typeof setInterval> | null
   private readonly logger: { warn(message: string): void }
 
   constructor(
     private readonly transport: LarkTransport,
-    options: { throttleMs?: number; logger?: { warn(message: string): void } } = {},
+    options: {
+      throttleMs?: number
+      cardTtlMs?: number
+      sweepIntervalMs?: number
+      logger?: { warn(message: string): void }
+    } = {},
   ) {
     this.throttleMs = options.throttleMs ?? 500
+    this.cardTtlMs = options.cardTtlMs ?? 15 * 60_000
     this.logger = options.logger ?? { warn: () => {} }
+    this.sweepTimer = setInterval(
+      () => this.sweepStale(),
+      options.sweepIntervalMs ?? SWEEP_INTERVAL_MS,
+    )
+    this.sweepTimer.unref?.()
   }
 
   /** Open a new streaming card for one chat (flushing any stale one first). */
@@ -247,6 +272,7 @@ export class StreamingCardManager {
     const card = buildCard({ title, content: '', rows: [], status: 'working' })
     const messageId = await this.transport.sendCard(chatId, card)
     this.lastMessageIds.set(chatId, messageId)
+    const now = Date.now()
     this.active.set(chatId, {
       chatId,
       messageId,
@@ -254,6 +280,8 @@ export class StreamingCardManager {
       timer: null,
       flushing: false,
       closed: false,
+      openedAt: now,
+      lastPatchAt: now,
     })
   }
 
@@ -262,6 +290,7 @@ export class StreamingCardManager {
     const card = this.active.get(chatId)
     if (card === undefined || card.closed) return
     card.pending = snapshot
+    card.lastPatchAt = Date.now()
     if (card.timer === null && !card.flushing) {
       card.timer = setTimeout(() => {
         card.timer = null
@@ -317,16 +346,61 @@ export class StreamingCardManager {
     try {
       await this.transport.updateCard(messageId, buildCard(snapshot))
     } catch (error: unknown) {
+      if (this.handlePatchFailure(messageId, error)) return
       this.logger.warn(`card refresh failed: ${String(error)}`)
     }
   }
 
   /** Dispose every active card without further patching. */
   dispose(): void {
+    if (this.sweepTimer !== null) clearInterval(this.sweepTimer)
     for (const card of this.active.values()) {
       if (card.timer !== null) clearTimeout(card.timer)
     }
     this.active.clear()
+  }
+
+  /**
+   * Handle one card-patch failure. Returns true when the message is gone
+   * for good (terminal code): the card is retired and the message id is
+   * remembered so nothing patches it again.
+   */
+  private handlePatchFailure(messageId: string, error: unknown): boolean {
+    const code = (error as { code?: number } | null)?.code
+    if (!isTerminalMessageCode(code)) return false
+    markUnavailable(messageId, code ?? -1)
+    this.logger.warn(`card message ${messageId} gone (code ${String(code)}); stream retired`)
+    for (const [chatId, card] of this.active) {
+      if (card.messageId !== messageId) continue
+      card.closed = true
+      if (card.timer !== null) {
+        clearTimeout(card.timer)
+        card.timer = null
+      }
+      this.active.delete(chatId)
+      this.lastMessageIds.delete(chatId)
+      return true
+    }
+    // A finalized card's message died: drop the id so toggles stop targeting it.
+    for (const [chatId, id] of this.lastMessageIds) {
+      if (id === messageId) this.lastMessageIds.delete(chatId)
+    }
+    return true
+  }
+
+  /** Retire cards that have seen no patch activity for `cardTtlMs`. */
+  private sweepStale(): void {
+    const cutoff = Date.now() - this.cardTtlMs
+    for (const [chatId, card] of this.active) {
+      if (card.lastPatchAt > cutoff) continue
+      this.logger.warn(`streaming card for ${chatId} idle > ${Math.round(this.cardTtlMs / 1000)}s; retiring`)
+      card.closed = true
+      if (card.timer !== null) {
+        clearTimeout(card.timer)
+        card.timer = null
+      }
+      this.active.delete(chatId)
+    }
   }
 
   private async flush(card: ActiveCard): Promise<void> {
@@ -339,6 +413,7 @@ export class StreamingCardManager {
         try {
           await this.transport.updateCard(card.messageId, buildCard(snapshot))
         } catch (error: unknown) {
+          if (this.handlePatchFailure(card.messageId, error)) return
           this.logger.warn(`streaming card patch failed (continuing): ${String(error)}`)
         }
       }

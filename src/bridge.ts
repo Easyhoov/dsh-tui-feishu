@@ -20,6 +20,8 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { CardRow, CardSnapshot, CardStatus, StreamingCardManager } from './cards.js'
 import { parseReminderTime, describeReminder, type Reminder, type ReminderStore } from './reminders.js'
+import { redactInlineSecrets, sanitizeToolDetail } from './redact.js'
+import { resolveToolDescriptor } from './tools.js'
 import type { FeishuCardAction, FeishuMessage, LarkTransport } from './transport.js'
 import type { SessionMap } from './session-map.js'
 
@@ -168,20 +170,30 @@ function extractResultText(message: unknown): string {
 
 /** One-line summary of a tool call for the activity rows. */
 export function toolRowSummary(name: string, argsJson: string): string {
+  const sanitizer = resolveToolDescriptor(name)?.sanitizer
   try {
     const args = JSON.parse(argsJson) as Record<string, unknown>
     for (const key of ['command', 'path', 'file_path', 'pattern', 'query', 'url', 'description']) {
       const value = args[key]
       if (typeof value === 'string' && value.trim() !== '') {
-        return value.length > 72 ? `${value.slice(0, 72)}…` : value
+        // The summary is the first thing anyone sees: sanitize it like the
+        // tool's detail so credentials never make it onto the card.
+        return truncateSummary(sanitizeToolDetail(value, sanitizer) ?? redactInlineSecrets(value))
       }
     }
     const first = Object.values(args).find(value => typeof value === 'string')
-    if (typeof first === 'string') return first.length > 72 ? `${first.slice(0, 72)}…` : first
+    if (typeof first === 'string') {
+      return truncateSummary(sanitizeToolDetail(first, sanitizer) ?? redactInlineSecrets(first))
+    }
   } catch {
     // Non-JSON or absent arguments - the bare tool name says enough.
   }
   return ''
+}
+
+/** Cap a one-line summary at a readable length. */
+function truncateSummary(text: string): string {
+  return text.length > 72 ? `${text.slice(0, 72)}…` : text
 }
 
 /**
@@ -816,7 +828,10 @@ export class Bridge {
             name: String(data.name ?? 'tool'),
             summary: toolRowSummary(String(data.name ?? ''), args),
             status: 'running' as const,
-            ...(args === '' ? {} : { detailIn: args.slice(0, DETAIL_CAPTURE_CHARS) }),
+            // Raw arguments may embed credentials; redact before capture.
+            ...(args === ''
+              ? {}
+              : { detailIn: redactInlineSecrets(args).slice(0, DETAIL_CAPTURE_CHARS) }),
           },
         ]
         this.syncCard(chatId, state, 'working')
@@ -844,11 +859,19 @@ export class Bridge {
         if (matched >= 0) {
           const row = rows[matched]
           if (row !== undefined && row.kind === 'tool') {
-            const resultText = extractResultText(data.message)
-            const errorText =
+            // Sanitize by the tool's kind when known; always redact
+            // credential-shaped text as a base layer.
+            const sanitizer = resolveToolDescriptor(row.name)?.sanitizer
+            const rawResult = extractResultText(data.message)
+            const resultText =
+              sanitizer === undefined
+                ? redactInlineSecrets(rawResult)
+                : sanitizeToolDetail(rawResult, sanitizer)
+            const rawError =
               typeof data.error === 'string'
                 ? data.error
                 : ((data.error as { message?: string } | undefined)?.message ?? '')
+            const errorText = redactInlineSecrets(rawError)
             const detail = [resultText, errorText].filter(part => part !== '').join('\n')
             rows[matched] = {
               ...row,

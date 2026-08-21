@@ -55,7 +55,11 @@ export declare function toFeishuMarkdown(markdown: string): string;
 export declare function buildCard(snapshot: CardSnapshot): unknown;
 /**
  * Manages one active streaming card per chat: throttled, coalesced patches;
- * a failed patch never kills the stream (logged, latest snapshot retried).
+ * a failed patch never kills the stream (logged, latest snapshot retried),
+ * except when the platform reports the message as deleted/recalled - then
+ * the card is retired immediately and the message id remembered so nothing
+ * keeps patching a dead card. Cards idle for `cardTtlMs` are swept (the
+ * turn's reply then falls back to plain text).
  */
 export declare class StreamingCardManager {
     private readonly transport;
@@ -64,9 +68,13 @@ export declare class StreamingCardManager {
      *  finished cards can still be re-rendered (the detail toggle). */
     private readonly lastMessageIds;
     private readonly throttleMs;
+    private readonly cardTtlMs;
+    private readonly sweepTimer;
     private readonly logger;
     constructor(transport: LarkTransport, options?: {
         throttleMs?: number;
+        cardTtlMs?: number;
+        sweepIntervalMs?: number;
         logger?: {
             warn(message: string): void;
         };
@@ -91,5 +99,13 @@ export declare class StreamingCardManager {
     refresh(chatId: string, snapshot: CardSnapshot): Promise<void>;
     /** Dispose every active card without further patching. */
     dispose(): void;
+    /**
+     * Handle one card-patch failure. Returns true when the message is gone
+     * for good (terminal code): the card is retired and the message id is
+     * remembered so nothing patches it again.
+     */
+    private handlePatchFailure;
+    /** Retire cards that have seen no patch activity for `cardTtlMs`. */
+    private sweepStale;
     private flush;
 }

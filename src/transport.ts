@@ -76,6 +76,44 @@ export class FeishuApiError extends Error {
 }
 
 /**
+ * Business codes treated as transient (gateway timeouts / CardKit internal
+ * errors) - the message itself is fine, the platform hiccuped. Retried with
+ * short backoff. Mirrors hermes-lark-streaming's transient-error set.
+ */
+const TRANSIENT_CODES: ReadonlySet<number> = new Set([
+  99991400, // gateway timeout
+  2200, // CardKit gateway timeout
+  1663, // CardKit internal error
+  300000, // CardKit server internal error
+])
+
+/** Backoff delays between transient retries, in ms. */
+const TRANSIENT_RETRY_DELAYS_MS: readonly number[] = [150, 500, 1000]
+
+/**
+ * Run one Feishu API call with transient-error retry: business codes in the
+ * transient set and network-level failures (errors that are not business
+ * `FeishuApiError`s) are retried with short backoff; everything else
+ * (terminal message errors, permissions, rate limits) surfaces immediately.
+ * The call is expected to throw `FeishuApiError` for business failures.
+ */
+async function withTransientRetry<T>(call: () => Promise<T>): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 0; attempt <= TRANSIENT_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await call()
+    } catch (error: unknown) {
+      lastError = error
+      const apiError = error instanceof FeishuApiError ? error : undefined
+      const transient = apiError !== undefined ? TRANSIENT_CODES.has(apiError.code) : true
+      if (!transient || attempt === TRANSIENT_RETRY_DELAYS_MS.length) throw error
+      await new Promise(resolve => setTimeout(resolve, TRANSIENT_RETRY_DELAYS_MS[attempt] ?? 150))
+    }
+  }
+  throw lastError
+}
+
+/**
  * Fold an HTTP-layer SDK error (axios) into a FeishuApiError carrying the
  * platform's business code/message, so logs show the real rejection reason
  * instead of a bare 'Request failed with status code 400'.
@@ -301,9 +339,15 @@ export class LarkTransport {
   async updateCard(messageId: string, card: unknown): Promise<void> {
     let response
     try {
-      response = await this.client.im.v1.message.patch({
-        data: { content: JSON.stringify(card) },
-        path: { message_id: messageId },
+      response = await withTransientRetry(async () => {
+        try {
+          return await this.client.im.v1.message.patch({
+            data: { content: JSON.stringify(card) },
+            path: { message_id: messageId },
+          })
+        } catch (error: unknown) {
+          throw asFeishuError('im.v1.message.patch', error)
+        }
       })
     } catch (error: unknown) {
       throw asFeishuError('im.v1.message.patch', error)
@@ -330,9 +374,15 @@ export class LarkTransport {
   private async createMessage(chatId: string, msgType: string, content: string) {
     let response
     try {
-      response = await this.client.im.v1.message.create({
-        data: { receive_id: chatId, msg_type: msgType, content },
-        params: { receive_id_type: 'chat_id' },
+      response = await withTransientRetry(async () => {
+        try {
+          return await this.client.im.v1.message.create({
+            data: { receive_id: chatId, msg_type: msgType, content },
+            params: { receive_id_type: 'chat_id' },
+          })
+        } catch (error: unknown) {
+          throw asFeishuError('im.v1.message.create', error)
+        }
       })
     } catch (error: unknown) {
       throw asFeishuError('im.v1.message.create', error)
