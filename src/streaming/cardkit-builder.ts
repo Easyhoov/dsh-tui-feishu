@@ -15,10 +15,10 @@
  * @module dsh-tui-feishu/streaming/cardkit-builder
  */
 
-import type { CardFooter, CardRow, CardSnapshot } from '../cards.js'
+import type { CardFooter, CardRow, CardSnapshot, CardStatus } from '../cards.js'
 import { splitLongText } from '../cardmd.js'
 import { t, type CardLocale } from '../i18n.js'
-import { toolDisplayTitle } from '../tools.js'
+import { resolveToolDescriptor, toolDisplayTitle } from '../tools.js'
 
 /** Element ids the manager addresses. */
 export const KIT_ANSWER_ELEMENT = 'streaming_content'
@@ -26,7 +26,18 @@ export const KIT_TOOL_PANEL_ELEMENT = 'tool_panel'
 export const KIT_REASONING_PANEL_ELEMENT = 'reasoning_panel'
 export const KIT_REASONING_TEXT_ELEMENT = 'reasoning_text'
 
-/** Icon tokens for row statuses. */
+/** The animated loading icon hermes-lark-streaming ships on streaming cards. */
+const LOADING_IMG_KEY = 'img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg'
+
+/** Header states, matching hermes-lark-streaming's card header. */
+const HEADER_STATES: Record<CardStatus, { template: string; labelKey: string }> = {
+  working: { template: 'blue', labelKey: 'processing' },
+  done: { template: 'green', labelKey: 'statusCompleted' },
+  error: { template: 'red', labelKey: 'statusError' },
+  stopped: { template: 'red', labelKey: 'statusStopped' },
+}
+
+/** Icon tokens for row statuses (hermes colors). */
 const STATUS_INFO: Record<'running' | 'done' | 'error', { labelKey: string; color: string }> = {
   running: { labelKey: 'running', color: 'turquoise' },
   done: { labelKey: 'succeeded', color: 'green' },
@@ -69,15 +80,20 @@ function collapsiblePanel(options: {
   return panel
 }
 
-/** One tool step inside the tool panel. */
+/** One tool step inside the tool panel (hermes-lark-streaming layout). */
 function toolStepElements(row: Extract<CardRow, { kind: 'tool' }>, locale: CardLocale): unknown[] {
   const statusInfo = STATUS_INFO[row.status]
+  const descriptor = resolveToolDescriptor(row.name)
   const title = toolDisplayTitle(row.name)
   const duration = row.durationMs !== undefined ? ` (${formatElapsed(row.durationMs)})` : ''
   const elements: unknown[] = [
     {
       tag: 'div',
-      icon: { tag: 'standard_icon', token: 'tool_02', color: 'grey' },
+      icon: {
+        tag: 'standard_icon',
+        token: descriptor?.icon ?? 'setting-inter_outlined',
+        color: 'grey',
+      },
       text: {
         tag: 'lark_md',
         content: `**${escapeMd(title)}${duration}** · <font color='${statusInfo.color}'>${t(statusInfo.labelKey, locale)}</font>`,
@@ -108,16 +124,24 @@ function toolStepElements(row: Extract<CardRow, { kind: 'tool' }>, locale: CardL
   return elements
 }
 
-/** Build the tool panel element from rows. */
+/** Build the tool panel element from rows (or the pending placeholder). */
 export function buildToolPanel(
   rows: readonly CardRow[],
   locale: CardLocale,
   options: { expanded?: boolean; elementId?: string } = {},
 ): Record<string, unknown> {
   const steps = rows.filter((row): row is Extract<CardRow, { kind: 'tool' }> => row.kind === 'tool')
+  if (steps.length === 0) {
+    // hermes shows a collapsed "tool use pending" panel while waiting.
+    return collapsiblePanel({
+      title: t('toolPending', locale),
+      expanded: false,
+      elements: [],
+      elementId: options.elementId ?? KIT_TOOL_PANEL_ELEMENT,
+    })
+  }
+  const parts = [`🛠️ ${t('toolUse', locale)}`, t('steps', locale).replace('{}', String(steps.length))]
   const running = steps.filter(step => step.status === 'running').length
-  const parts = [t('toolsTitle', locale)]
-  if (steps.length > 0) parts.push(t('steps', locale).replace('{}', String(steps.length)))
   if (running > 0) parts.push(`⏳ ${running}`)
   return collapsiblePanel({
     title: parts.join(' · '),
@@ -168,14 +192,15 @@ function footerMarkdown(snapshot: CardSnapshot, locale: CardLocale): string {
     parts.push(`${t('elapsed', locale)} ${formatElapsed(footer.elapsedMs)}`)
   }
   if (footer?.model !== undefined && footer.model !== '') {
-    parts.push(`${t('model', locale)} ${footer.model}`)
+    parts.push(footer.model)
   }
   return parts.join(' · ')
 }
 
 /**
- * The streaming placeholder card: reasoning + tool panels (empty placeholders
- * are omitted), one answer element in streaming mode, plus a Stop button.
+ * The streaming placeholder card, hermes-lark-streaming layout: reasoning
+ * panel + tool-use panel (pending placeholder) + answer element in
+ * streaming mode + animated loading icon + Stop button.
  */
 export function buildCardKitStreamingCard(
   snapshot: CardSnapshot,
@@ -186,15 +211,20 @@ export function buildCardKitStreamingCard(
   if (options.showReasoning !== false) {
     elements.push(buildReasoningPanel(snapshot.rows, locale))
   }
-  if (snapshot.rows.some(row => row.kind === 'tool')) {
-    elements.push(buildToolPanel(snapshot.rows, locale))
-  }
+  // The tool panel always exists (pending placeholder while idle), so the
+  // manager can stream first tool updates into it instead of adding it.
+  elements.push(buildToolPanel(snapshot.rows, locale))
   elements.push({
     tag: 'markdown',
     content: snapshot.content || ' ',
     text_size: 'normal_v2',
     margin: '0px 0px 0px 0px',
     element_id: KIT_ANSWER_ELEMENT,
+  })
+  elements.push({
+    tag: 'markdown',
+    content: ' ',
+    icon: { tag: 'custom_icon', img_key: LOADING_IMG_KEY, size: '16px 16px' },
   })
   // Card JSON 2.0 has no `action` container: interactive components sit
   // directly in body.elements (a v1-style {"tag":"action","actions":[...]}
@@ -206,6 +236,7 @@ export function buildCardKitStreamingCard(
     type: 'danger',
     behaviors: [{ type: 'callback', value: { kind: 'stop' } }],
   })
+  const header = HEADER_STATES[snapshot.status] ?? HEADER_STATES['working']
   return {
     schema: '2.0',
     config: {
@@ -219,8 +250,8 @@ export function buildCardKitStreamingCard(
       summary: { content: snapshot.title.slice(0, 120) },
     },
     header: {
-      title: { tag: 'plain_text', content: snapshot.title },
-      template: 'blue',
+      title: { tag: 'plain_text', content: t(header.labelKey, locale) },
+      template: header.template,
     },
     body: { elements },
   }
@@ -260,7 +291,7 @@ export function buildCardKitCompleteCard(
       behaviors: [{ type: 'callback', value: { kind: 'detail' } }],
     })
   }
-  const template = snapshot.status === 'error' ? 'red' : snapshot.status === 'stopped' ? 'grey' : 'green'
+  const header = HEADER_STATES[snapshot.status] ?? HEADER_STATES['done']
   return {
     schema: '2.0',
     config: {
@@ -269,8 +300,8 @@ export function buildCardKitCompleteCard(
       summary: { content: (snapshot.content || snapshot.title).slice(0, 120) },
     },
     header: {
-      title: { tag: 'plain_text', content: snapshot.title },
-      template,
+      title: { tag: 'plain_text', content: t(header.labelKey, locale) },
+      template: header.template,
     },
     body: { elements },
   }

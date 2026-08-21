@@ -103,10 +103,10 @@ ok('manager runs create → add tool panel → stream text → close → complet
     status: 'working',
   })
   await sleep(40)
-  assert.ok(transport.calls.some(call => call[0] === 'cardkitBatchUpdate'), 'tool panel added')
+  assert.ok(transport.calls.some(call => call[0] === 'cardkitBatchUpdate'), 'tool panel updated')
   const batch = transport.calls.find(call => call[0] === 'cardkitBatchUpdate')
-  assert.equal(batch[2][0].action, 'add_elements')
-  assert.equal(batch[2][0].params.target_element_id, 'streaming_content')
+  assert.equal(batch[2][0].action, 'partial_update_element')
+  assert.equal(batch[2][0].params.element_id, 'tool_panel')
   const stream = transport.calls.find(call => call[0] === 'cardkitStreamElement')
   assert.equal(stream[2], 'streaming_content')
   assert.equal(stream[3], 'work')

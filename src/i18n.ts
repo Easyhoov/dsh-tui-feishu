@@ -33,6 +33,13 @@ export const COPY: Record<string, Copy> = {
   succeeded: { zh: '成功', en: 'Succeeded' },
   failed: { zh: '失败', en: 'Failed' },
   stopped: { zh: '已停止', en: 'Stopped' },
+  // hermes-lark-streaming 同款卡片文案
+  processing: { zh: '💭 处理中...', en: '💭 Processing...' },
+  statusCompleted: { zh: '✅ 已完成', en: '✅ Completed' },
+  statusError: { zh: '❌ 出错', en: '❌ Error' },
+  statusStopped: { zh: '🛑 已停止', en: '🛑 Stopped' },
+  toolUse: { zh: '工具执行', en: 'Tool use' },
+  toolPending: { zh: '🛠️ 等待工具执行', en: '🛠️ Tool use pending' },
 }
 
 /** Pick one language's copy for a key. */

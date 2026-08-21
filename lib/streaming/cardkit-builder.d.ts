@@ -21,7 +21,7 @@ export declare const KIT_ANSWER_ELEMENT = "streaming_content";
 export declare const KIT_TOOL_PANEL_ELEMENT = "tool_panel";
 export declare const KIT_REASONING_PANEL_ELEMENT = "reasoning_panel";
 export declare const KIT_REASONING_TEXT_ELEMENT = "reasoning_text";
-/** Build the tool panel element from rows. */
+/** Build the tool panel element from rows (or the pending placeholder). */
 export declare function buildToolPanel(rows: readonly CardRow[], locale: CardLocale, options?: {
     expanded?: boolean;
     elementId?: string;
@@ -32,8 +32,9 @@ export declare function buildReasoningPanel(rows: readonly CardRow[], locale: Ca
     elementId?: string;
 }): Record<string, unknown>;
 /**
- * The streaming placeholder card: reasoning + tool panels (empty placeholders
- * are omitted), one answer element in streaming mode, plus a Stop button.
+ * The streaming placeholder card, hermes-lark-streaming layout: reasoning
+ * panel + tool-use panel (pending placeholder) + answer element in
+ * streaming mode + animated loading icon + Stop button.
  */
 export declare function buildCardKitStreamingCard(snapshot: CardSnapshot, locale: CardLocale, options?: {
     showReasoning?: boolean;

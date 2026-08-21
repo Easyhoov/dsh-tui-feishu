@@ -113,7 +113,9 @@ export class CardKitStreamingManager implements CardStream {
       messageId,
       seq: 1,
       lastSnapshot: snapshot,
-      hasToolPanel: false,
+      // The placeholder card always carries the tool panel (pending state),
+      // so the first real tool update patches it in place.
+      hasToolPanel: true,
       pending: null,
       timer: null,
       flushing: false,
