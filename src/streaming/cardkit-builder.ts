@@ -144,7 +144,9 @@ export function buildReasoningPanel(
         tag: 'markdown',
         content: text.slice(0, 600),
         text_size: 'notation',
-        ...(options.elementId === undefined ? {} : { element_id: KIT_REASONING_TEXT_ELEMENT }),
+        // The inner text element must carry a stable id: the manager streams
+        // thinking deltas into it (cardkit cardElement.content by element_id).
+        element_id: KIT_REASONING_TEXT_ELEMENT,
       },
     ],
     elementId: options.elementId ?? KIT_REASONING_PANEL_ELEMENT,

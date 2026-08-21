@@ -245,30 +245,42 @@ export class CardKitStreamingManager implements CardStream {
         }
       }
       if (actions.length > 0) {
+        // Structural failures make the card state untrustworthy: retire it
+        // so the bridge falls back to plain text instead of fighting a
+        // broken card.
         card.seq += 1
         await this.transport.cardkitBatchUpdate(card.cardId, actions, card.seq)
       }
-      // Thinking text streams into its own element (typing effect while
-      // streaming_mode is on) - the same per-element streaming hermes uses.
+      // Text streaming is best-effort: a failed stream_element (e.g. a
+      // transient error) must NOT retire the card - the terminal card's full
+      // update carries the complete content anyway (hermes logs and moves on).
       if (this.showReasoning && thinkRows.length > 0 && rowsKey(thinkRows) !== rowsKey(prevThinkRows)) {
         const text = thinkRows.map(row => row.text).join('\n').slice(0, 600) || ' '
         card.seq += 1
-        await this.transport.cardkitStreamElement(card.cardId, KIT_REASONING_TEXT_ELEMENT, text, card.seq)
+        try {
+          await this.transport.cardkitStreamElement(card.cardId, KIT_REASONING_TEXT_ELEMENT, text, card.seq)
+        } catch (error: unknown) {
+          this.logger.warn(`thinking stream failed (continuing): ${String(error)}`)
+        }
       }
       if (previous === null || snapshot.content !== previous.content) {
         card.seq += 1
-        await this.transport.cardkitStreamElement(
-          card.cardId,
-          KIT_ANSWER_ELEMENT,
-          snapshot.content || ' ',
-          card.seq,
-        )
+        try {
+          await this.transport.cardkitStreamElement(
+            card.cardId,
+            KIT_ANSWER_ELEMENT,
+            snapshot.content || ' ',
+            card.seq,
+          )
+        } catch (error: unknown) {
+          this.logger.warn(`answer stream failed (continuing): ${String(error)}`)
+        }
       }
       card.lastSnapshot = snapshot
       return true
     } catch (error: unknown) {
-      // Any CardKit failure retires the card: the bridge falls back to plain
-      // text at turn end instead of fighting a broken card.
+      // Structural/terminal failures retire the card: the bridge falls back
+      // to plain text at turn end instead of fighting a broken card.
       this.logger.warn(`cardkit update failed (retiring card): ${String(error)}`)
       this.active.delete(card.chatId)
       this.lastCards.delete(card.chatId)
