@@ -64,6 +64,21 @@ export declare function toFeishuMarkdown(markdown: string): string;
 /** Build the streaming-card JSON for one snapshot. */
 export declare function buildCard(snapshot: CardSnapshot, locale?: CardLocale): unknown;
 /**
+ * The card-stream surface the bridge drives - implemented by both the v1
+ * `StreamingCardManager` and the CardKit `CardKitStreamingManager`, so the
+ * engine is a configuration choice, not a bridge fork.
+ */
+export interface CardStream {
+    open(chatId: string, title: string): Promise<void>;
+    patch(chatId: string, snapshot: CardSnapshot): void;
+    finalize(chatId: string, status: 'done' | 'error' | 'stopped', footer?: CardFooter, snapshot?: CardSnapshot): Promise<void>;
+    isActive(chatId: string): boolean;
+    activeMessageId(chatId: string): string | undefined;
+    lastMessageId(chatId: string): string | undefined;
+    refresh(chatId: string, snapshot: CardSnapshot): Promise<void>;
+    dispose(): void;
+}
+/**
  * Manages one active streaming card per chat: throttled, coalesced patches;
  * a failed patch never kills the stream (logged, latest snapshot retried),
  * except when the platform reports the message as deleted/recalled - then
@@ -71,7 +86,7 @@ export declare function buildCard(snapshot: CardSnapshot, locale?: CardLocale): 
  * keeps patching a dead card. Cards idle for `cardTtlMs` are swept (the
  * turn's reply then falls back to plain text).
  */
-export declare class StreamingCardManager {
+export declare class StreamingCardManager implements CardStream {
     private readonly transport;
     private readonly active;
     /** The most recently opened card per chat, kept after finalization so

@@ -393,6 +393,148 @@ export class LarkTransport {
     }
   }
 
+  /**
+   * Create a CardKit card entity from card JSON 2.0; resolves the `card_id`.
+   * (CardKit cards stream per-element and are updated via the cardkit APIs,
+   * not `im.v1.message.patch`.)
+   */
+  async cardkitCreate(card: unknown): Promise<string> {
+    let response
+    try {
+      response = await withTransientRetry(async () => {
+        try {
+          return await this.client.cardkit.v1.card.create({
+            data: { type: 'card_json', data: JSON.stringify(card) },
+          })
+        } catch (error: unknown) {
+          throw asFeishuError('cardkit.v1.card.create', error)
+        }
+      })
+    } catch (error: unknown) {
+      throw asFeishuError('cardkit.v1.card.create', error)
+    }
+    this.assertOk(response, 'cardkit.v1.card.create')
+    const cardId = response.data?.card_id
+    if (cardId === undefined || cardId === '') {
+      throw new FeishuApiError('cardkit.v1.card.create', -1, 'response carried no card_id')
+    }
+    return cardId
+  }
+
+  /** Send a CardKit card entity into a chat as a new message; resolves the message id. */
+  async cardkitSendToChat(chatId: string, cardId: string): Promise<string> {
+    let response
+    try {
+      response = await withTransientRetry(async () => {
+        try {
+          return await this.client.im.v1.message.create({
+            data: {
+              receive_id: chatId,
+              msg_type: 'interactive',
+              content: JSON.stringify({ type: 'card', data: { card_id: cardId } }),
+            },
+            params: { receive_id_type: 'chat_id' },
+          })
+        } catch (error: unknown) {
+          throw asFeishuError('im.v1.message.create', error)
+        }
+      })
+    } catch (error: unknown) {
+      throw asFeishuError('im.v1.message.create', error)
+    }
+    this.assertOk(response, 'im.v1.message.create')
+    const messageId = response.data?.message_id
+    if (messageId === undefined || messageId === '') {
+      throw new FeishuApiError('im.v1.message.create', -1, 'response carried no message_id')
+    }
+    return messageId
+  }
+
+  /** Structurally update a CardKit card (add/replace elements), sequence-ordered. */
+  async cardkitBatchUpdate(cardId: string, actions: readonly unknown[], sequence: number): Promise<void> {
+    let response
+    try {
+      response = await withTransientRetry(async () => {
+        try {
+          return await this.client.cardkit.v1.card.batchUpdate({
+            data: { actions: JSON.stringify(actions), sequence },
+            path: { card_id: cardId },
+          })
+        } catch (error: unknown) {
+          throw asFeishuError('cardkit.v1.card.batchUpdate', error)
+        }
+      })
+    } catch (error: unknown) {
+      throw asFeishuError('cardkit.v1.card.batchUpdate', error)
+    }
+    this.assertOk(response, 'cardkit.v1.card.batchUpdate')
+  }
+
+  /** Stream one element's text content (typing effect while streaming_mode is on). */
+  async cardkitStreamElement(
+    cardId: string,
+    elementId: string,
+    content: string,
+    sequence: number,
+  ): Promise<void> {
+    let response
+    try {
+      response = await withTransientRetry(async () => {
+        try {
+          return await this.client.cardkit.v1.cardElement.content({
+            data: { content, sequence },
+            path: { card_id: cardId, element_id: elementId },
+          })
+        } catch (error: unknown) {
+          throw asFeishuError('cardkit.v1.cardElement.content', error)
+        }
+      })
+    } catch (error: unknown) {
+      throw asFeishuError('cardkit.v1.cardElement.content', error)
+    }
+    this.assertOk(response, 'cardkit.v1.cardElement.content')
+  }
+
+  /** Full replace of a CardKit card (must follow close-streaming at the end). */
+  async cardkitUpdate(cardId: string, card: unknown, sequence: number): Promise<void> {
+    let response
+    try {
+      response = await withTransientRetry(async () => {
+        try {
+          return await this.client.cardkit.v1.card.update({
+            data: { card: { type: 'card_json', data: JSON.stringify(card) }, sequence },
+            path: { card_id: cardId },
+          })
+        } catch (error: unknown) {
+          throw asFeishuError('cardkit.v1.card.update', error)
+        }
+      })
+    } catch (error: unknown) {
+      throw asFeishuError('cardkit.v1.card.update', error)
+    }
+    this.assertOk(response, 'cardkit.v1.card.update')
+  }
+
+  /** Turn streaming mode off (required before the final full update). */
+  async cardkitCloseStreaming(cardId: string, sequence: number): Promise<void> {
+    let response
+    try {
+      response = await withTransientRetry(async () => {
+        try {
+          return await this.client.cardkit.v1.card.settings({
+            data: { settings: JSON.stringify({ streaming_mode: false }), sequence },
+            path: { card_id: cardId },
+          })
+        } catch (error: unknown) {
+          throw asFeishuError('cardkit.v1.card.settings', error)
+        }
+      })
+    } catch (error: unknown) {
+      throw asFeishuError('cardkit.v1.card.settings', error)
+    }
+    this.assertOk(response, 'cardkit.v1.card.settings')
+  }
+
   /** Fetch and cache the bot's own open id (`bot/v3/info`). */
   private async resolveBotOpenId(): Promise<void> {    const response = await this.client.request<{
       code?: number

@@ -34,7 +34,8 @@ import type { CommandInvocation } from '@deepseek-ai/dsh-commands'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
 import { Bridge, type AgentStore, type ModelControl, type SessionPrefs } from './bridge.js'
-import { StreamingCardManager } from './cards.js'
+import { StreamingCardManager, type CardStream } from './cards.js'
+import { CardKitStreamingManager } from './streaming/cardkit-manager.js'
 import { ReminderStore } from './reminders.js'
 import {
   dataFiles,
@@ -71,6 +72,10 @@ export interface Config {
   readonly locale?: 'zh' | 'en'
   /** Resolve remote images in answers to Feishu image keys (default true). */
   readonly resolveImages?: boolean
+  /** Card engine: `v1` (message.patch, default) or `cardkit` (CardKit 2.0 typing). */
+  readonly cardEngine?: 'v1' | 'cardkit'
+  /** Show reasoning/thinking rows on cards (default true). */
+  readonly showReasoning?: boolean
   /** Allowed Feishu sender open ids; empty serves every p2p sender. */
   readonly allowedUsers?: string[]
 }
@@ -86,6 +91,8 @@ export const Config: z<Config> = z.object({
   cardTtlMs: z.natural().min(1000).required(false),
   locale: z.union([z.const('zh'), z.const('en')]).required(false),
   resolveImages: z.boolean().required(false),
+  cardEngine: z.union([z.const('v1'), z.const('cardkit')]).required(false),
+  showReasoning: z.boolean().required(false),
   allowedUsers: z.array(z.string()).required(false),
 })
 
@@ -329,12 +336,19 @@ export function apply(ctx: Context, config: Config = {}): void {
           ? [credentials.ownerOpenId]
           : []
     const transport = new LarkTransport(credentials, logger)
-    const cards = new StreamingCardManager(transport, {
+    const baseCardOptions = {
       ...(config.cardThrottleMs === undefined ? {} : { throttleMs: config.cardThrottleMs }),
       ...(config.cardTtlMs === undefined ? {} : { cardTtlMs: config.cardTtlMs }),
       ...(config.locale === undefined ? {} : { locale: config.locale }),
       logger,
-    })
+    }
+    const cards: CardStream =
+      (config.cardEngine ?? 'v1') === 'cardkit'
+        ? new CardKitStreamingManager(transport, {
+            ...baseCardOptions,
+            ...(config.showReasoning === undefined ? {} : { showReasoning: config.showReasoning }),
+          })
+        : new StreamingCardManager(transport, baseCardOptions)
     const sessionMap = new SessionMap(files.sessionMap)
     // The store fires into the bridge, which is constructed right after.
     let bridgeRef: Bridge | undefined
@@ -434,6 +448,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       modelControl,
       reminders,
       ...(config.resolveImages === undefined ? {} : { resolveImages: config.resolveImages }),
+      ...(config.showReasoning === undefined ? {} : { showReasoning: config.showReasoning }),
       ...(allowed.length === 0 ? {} : { allowedUsers: allowed }),
     })
     bridgeRef = bridge

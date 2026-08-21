@@ -18,7 +18,7 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
-import type { CardFooter, CardRow, CardSnapshot, CardStatus, StreamingCardManager } from './cards.js'
+import type { CardFooter, CardRow, CardSnapshot, CardStatus, CardStream } from './cards.js'
 import { stripReasoningTags } from './cardmd.js'
 import { parseReminderTime, describeReminder, type Reminder, type ReminderStore } from './reminders.js'
 import { redactInlineSecrets, sanitizeToolDetail } from './redact.js'
@@ -85,7 +85,7 @@ export interface BridgeOptions {
   readonly transport: LarkTransport
   readonly sessionMap: SessionMap
   readonly agentStore: AgentStore
-  readonly cards: StreamingCardManager
+  readonly cards: CardStream
   readonly logger: BridgeLogger
   /** Working directory for newly created sessions. */
   readonly defaultCwd: string
@@ -97,6 +97,8 @@ export interface BridgeOptions {
   readonly reminders?: ReminderStore
   /** Resolve remote answer images to Feishu keys at turn end (default true). */
   readonly resolveImages?: boolean
+  /** Render reasoning/thinking rows on cards (default true). */
+  readonly showReasoning?: boolean
 }
 
 /** One chat's live turn-card state (bridge-owned). */
@@ -845,7 +847,11 @@ export class Bridge {
             state.content += text
             this.syncCard(chatId, state, 'working')
           }
-        } else if (chunk?.type === 'reasoning-delta' && typeof chunk.text === 'string') {
+        } else if (
+          chunk?.type === 'reasoning-delta' &&
+          typeof chunk.text === 'string' &&
+          this.options.showReasoning !== false
+        ) {
           if (!state.openThink) {
             state.rows = [...state.rows, { kind: 'think', text: chunk.text }]
             state.openThink = true

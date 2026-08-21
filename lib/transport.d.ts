@@ -122,6 +122,22 @@ export declare class LarkTransport {
      * download-then-upload flow.
      */
     uploadImage(url: string, timeoutMs?: number): Promise<string | undefined>;
+    /**
+     * Create a CardKit card entity from card JSON 2.0; resolves the `card_id`.
+     * (CardKit cards stream per-element and are updated via the cardkit APIs,
+     * not `im.v1.message.patch`.)
+     */
+    cardkitCreate(card: unknown): Promise<string>;
+    /** Send a CardKit card entity into a chat as a new message; resolves the message id. */
+    cardkitSendToChat(chatId: string, cardId: string): Promise<string>;
+    /** Structurally update a CardKit card (add/replace elements), sequence-ordered. */
+    cardkitBatchUpdate(cardId: string, actions: readonly unknown[], sequence: number): Promise<void>;
+    /** Stream one element's text content (typing effect while streaming_mode is on). */
+    cardkitStreamElement(cardId: string, elementId: string, content: string, sequence: number): Promise<void>;
+    /** Full replace of a CardKit card (must follow close-streaming at the end). */
+    cardkitUpdate(cardId: string, card: unknown, sequence: number): Promise<void>;
+    /** Turn streaming mode off (required before the final full update). */
+    cardkitCloseStreaming(cardId: string, sequence: number): Promise<void>;
     /** Fetch and cache the bot's own open id (`bot/v3/info`). */
     private resolveBotOpenId;
     /** Create a message in a chat; assert the API succeeded. */

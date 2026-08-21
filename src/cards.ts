@@ -285,6 +285,27 @@ interface ActiveCard {
 const SWEEP_INTERVAL_MS = 60_000
 
 /**
+ * The card-stream surface the bridge drives - implemented by both the v1
+ * `StreamingCardManager` and the CardKit `CardKitStreamingManager`, so the
+ * engine is a configuration choice, not a bridge fork.
+ */
+export interface CardStream {
+  open(chatId: string, title: string): Promise<void>
+  patch(chatId: string, snapshot: CardSnapshot): void
+  finalize(
+    chatId: string,
+    status: 'done' | 'error' | 'stopped',
+    footer?: CardFooter,
+    snapshot?: CardSnapshot,
+  ): Promise<void>
+  isActive(chatId: string): boolean
+  activeMessageId(chatId: string): string | undefined
+  lastMessageId(chatId: string): string | undefined
+  refresh(chatId: string, snapshot: CardSnapshot): Promise<void>
+  dispose(): void
+}
+
+/**
  * Manages one active streaming card per chat: throttled, coalesced patches;
  * a failed patch never kills the stream (logged, latest snapshot retried),
  * except when the platform reports the message as deleted/recalled - then
@@ -292,7 +313,7 @@ const SWEEP_INTERVAL_MS = 60_000
  * keeps patching a dead card. Cards idle for `cardTtlMs` are swept (the
  * turn's reply then falls back to plain text).
  */
-export class StreamingCardManager {
+export class StreamingCardManager implements CardStream {
   private readonly active = new Map<string, ActiveCard>()
   /** The most recently opened card per chat, kept after finalization so
    *  finished cards can still be re-rendered (the detail toggle). */

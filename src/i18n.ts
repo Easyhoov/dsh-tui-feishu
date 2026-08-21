@@ -27,6 +27,8 @@ export const COPY: Record<string, Copy> = {
   elapsed: { zh: '耗时', en: 'Elapsed' },
   model: { zh: '模型', en: 'Model' },
   toolsTitle: { zh: '🛠️ 工具调用', en: '🛠️ Tool use' },
+  steps: { zh: '{} 步', en: '{} steps' },
+  thought: { zh: '思考', en: 'Thought' },
   running: { zh: '运行中', en: 'Running' },
   succeeded: { zh: '成功', en: 'Succeeded' },
   failed: { zh: '失败', en: 'Failed' },

@@ -16,7 +16,7 @@
  */
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
-import type { StreamingCardManager } from './cards.js';
+import type { CardStream } from './cards.js';
 import { type Reminder, type ReminderStore } from './reminders.js';
 import type { LarkTransport } from './transport.js';
 import type { SessionMap } from './session-map.js';
@@ -80,7 +80,7 @@ export interface BridgeOptions {
     readonly transport: LarkTransport;
     readonly sessionMap: SessionMap;
     readonly agentStore: AgentStore;
-    readonly cards: StreamingCardManager;
+    readonly cards: CardStream;
     readonly logger: BridgeLogger;
     /** Working directory for newly created sessions. */
     readonly defaultCwd: string;
@@ -92,6 +92,8 @@ export interface BridgeOptions {
     readonly reminders?: ReminderStore;
     /** Resolve remote answer images to Feishu keys at turn end (default true). */
     readonly resolveImages?: boolean;
+    /** Render reasoning/thinking rows on cards (default true). */
+    readonly showReasoning?: boolean;
 }
 /** One-line summary of a tool call for the activity rows. */
 export declare function toolRowSummary(name: string, argsJson: string): string;
