@@ -500,6 +500,11 @@ export function apply(ctx: Context, config: Config = {}): void {
     bridge.start()
     bridge.bindSessionEvents(listener =>
       ctx.on('session/event', (session, event) => {
+        // Diagnostic: the live trial showed turns never finalize - this line
+        // proves whether host session events reach the bridge at all.
+        logger.info(
+          `[dsh-tui-feishu] session/event ${String((event as { type?: unknown }).type ?? '?')} for session ${String(session.id)}`,
+        )
         listener(String(session.id), event)
       }),
     )

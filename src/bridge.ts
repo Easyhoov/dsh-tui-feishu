@@ -831,9 +831,17 @@ export class Bridge {
   /** Fold one session event into the owning chat's streaming card. */
   private async handleSessionEvent(sessionId: string, event: SessionEvent): Promise<void> {
     const chatId = this.options.sessionMap.chatFor(sessionId)
-    if (chatId === undefined) return
+    if (chatId === undefined) {
+      this.options.logger.warn(`session event for unknown session ${sessionId} ignored (chatFor miss)`)
+      return
+    }
     let state = this.turns.get(chatId)
-    const data = (event as { data?: Record<string, unknown> }).data ?? {}
+    // Session events carry their payload directly on the event object in
+    // dsh-session 0.1.1 (turn/reason at the top level); older builds wrapped
+    // it in `data`. Read both shapes.
+    const eventRecord = event as { data?: Record<string, unknown>; reason?: unknown } & Record<string, unknown>
+    const data = eventRecord.data ?? {}
+    const topLevel = (key: string): unknown => eventRecord[key]
     switch (event.type) {
       case 'user/message':
       case 'turn/start': {
@@ -977,7 +985,9 @@ export class Bridge {
       }
       case 'turn/end': {
         if (state === undefined) return
-        const reason = (data.reason as { kind?: string; error?: { message?: string; code?: string } } | undefined)
+        const reason = ((topLevel('reason') ?? data.reason) as
+          | { kind?: string; error?: { message?: string; code?: string } }
+          | undefined)
         const status: CardStatus =
           reason?.kind === 'error' ? 'error' : reason?.kind === 'aborted' ? 'stopped' : 'done'
         if (reason?.kind === 'error') {
