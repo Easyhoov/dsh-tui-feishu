@@ -171,6 +171,6 @@ export declare class Bridge {
      * delegates down the chain (`next()`).
      */
     handleApprovalRequest(request: ApprovalRequestLike, next: () => Promise<ApprovalOutcome>): Promise<ApprovalOutcome>;
-    /** Route a card-button callback (approval decision, stop, or detail toggle). */
+    /** Route a card-button callback (approval decision, stop, detail toggle, session switch). */
     private handleCardAction;
 }

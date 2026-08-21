@@ -107,6 +107,8 @@ TUI 里：
 | `cardTtlMs` | 无更新自动退休流式卡片的时长（ms） | 900000（15 分钟） |
 | `locale` | 卡片文案语言 `zh` / `en` | `zh` |
 | `resolveImages` | 回合结束时把答案里的远程图片上传为飞书 img_key | `true` |
+| `cardEngine` | 卡片引擎：`v1`（message.patch，默认）或 `cardkit`（CardKit 2.0 打字机流式，需应用支持卡片 2.0） | `v1` |
+| `showReasoning` | 是否在卡片上展示思考过程行 | `true` |
 | `allowedUsers` | 允许的 sender open_id 白名单 | 扫码创建者 |
 
 ## 飞书端命令
@@ -130,7 +132,7 @@ TUI 里：
 | `/reminders` / `/unremind <序号>` | 查看 / 取消提醒 |
 | `/help` | 全部命令一览 |
 
-回合卡片上的按钮：⏹ Stop 中断当前回合；🔍 详情 展开/收起工具调用的参数和结果（回合结束后也能展开）；🔐 审批卡片 Allow/Reject 放行或拒绝危险操作。
+回合卡片上的按钮：⏹ Stop 中断当前回合；🔍 详情 展开/收起工具调用的参数和结果（回合结束后也能展开）；🔐 审批卡片 Allow/Reject 放行或拒绝危险操作；🗂 会话列表卡片上每个会话一个「切换到 N」按钮。
 
 ## 未做（路线图）
 

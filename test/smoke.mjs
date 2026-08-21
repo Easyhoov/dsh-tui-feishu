@@ -202,4 +202,14 @@ const fired = fakeAgent.sent.slice(agentMsgsBefore).some(m => JSON.stringify(m.c
 console.log('reminder fired into agent:', fired)
 reminderStore.dispose()
 
+// 14. /sessions renders an interactive card; its switch buttons route to /switch
+await fakeTransport._h({ messageId: 'ss1', chatId: 'oc_1', chatType: 'p2p', senderOpenId: 'ou_x', text: '/sessions', mentions: [] })
+await settle()
+const sessionsCard = sent.filter(m => m.card !== undefined).at(-1)
+const sessionsJson = JSON.stringify(sessionsCard?.card ?? '')
+console.log('sessions card with switch buttons:', sessionsJson.includes('切换到 1') && sessionsJson.includes('"kind":"session"'))
+await fakeTransport._a({ messageId: sessionsCard.id, chatId: 'oc_1', operatorOpenId: 'ou_x', value: { kind: 'session', action: 'switch', n: '1' } })
+await settle()
+console.log('session switch via button:', sent.some(m => m.text !== undefined && m.text.includes('已切换到')))
+
 console.log('SMOKE OK')
