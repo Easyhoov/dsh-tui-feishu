@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 import { buildCardKitStreamingCard, buildCardKitCompleteCard } from '../lib/streaming/cardkit-builder.js'
 import { CardKitStreamingManager } from '../lib/streaming/cardkit-manager.js'
 import { Bridge } from '../lib/bridge.js'
+import { normalizeCardAction } from '../lib/transport.js'
 import { SessionMap } from '../lib/session-map.js'
 
 let passed = 0
@@ -183,6 +184,30 @@ ok('bridge drives the CardKit engine end to end', async () => {
   assert.ok(kinds.includes('cardkitUpdate'), 'terminal card pushed')
   bridge.dispose()
   cards.dispose()
+})
+
+// ── card action callback normalization (v1 and schema-2.0 shapes) ───────
+ok('normalizes both v1 and schema-2.0 card action callbacks', () => {
+  const v1 = normalizeCardAction({
+    operator: { open_id: 'ou_1' },
+    action: { value: { kind: 'stop' } },
+    context: { open_message_id: 'om_1', open_chat_id: 'oc_1' },
+  })
+  assert.equal(v1.messageId, 'om_1')
+  assert.equal(v1.operatorOpenId, 'ou_1')
+  assert.equal(v1.value['kind'], 'stop')
+  const v2 = normalizeCardAction({
+    header: { event_type: 'card.action.trigger' },
+    event: {
+      operator: { open_id: 'ou_2' },
+      action: { value: { kind: 'session', action: 'switch', n: '1' } },
+      context: { open_message_id: 'om_2', open_chat_id: 'oc_2' },
+    },
+  })
+  assert.equal(v2.messageId, 'om_2')
+  assert.equal(v2.operatorOpenId, 'ou_2')
+  assert.equal(v2.value['kind'], 'session')
+  assert.equal(normalizeCardAction({}), undefined)
 })
 
 // ── thinking streams into its own element (typing effect) ──────────────

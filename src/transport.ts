@@ -167,17 +167,29 @@ export function normalizeMessageEvent(data: RawMessageEvent): FeishuMessage | un
 /**
  * Normalize a raw `card.action.trigger` payload into a bridge action, or
  * `undefined` when no actionable payload is present. Pure function.
+ *
+ * Accepts both callback shapes: the v1 payload (fields at the root:
+ * `operator` / `action` / `context`) and the schema-2.0 callback payload
+ * (fields nested under `event`: `event.operator` / `event.action` /
+ * `event.context` - see 卡片回传交互回调).
  */
 export function normalizeCardAction(data: RawCardActionEvent): FeishuCardAction | undefined {
-  const messageId = data.context?.open_message_id ?? data.open_message_id
-  const chatId = data.context?.open_chat_id ?? data.open_chat_id
-  const operatorOpenId = data.operator?.open_id ?? ''
-  const value = data.action?.value
+  const root = (data as { event?: unknown }).event
+  const event = root !== null && typeof root === 'object' ? (root as Record<string, unknown>) : undefined
+  const context = (event?.context ?? data.context ?? undefined) as
+    | { open_message_id?: string; open_chat_id?: string }
+    | undefined
+  const messageId = context?.open_message_id ?? data.open_message_id
+  const chatId = context?.open_chat_id ?? data.open_chat_id
+  const operator = (event?.operator ?? data.operator ?? undefined) as { open_id?: string } | undefined
+  const operatorOpenId = operator?.open_id ?? ''
+  const value = (event?.action ?? data.action ?? undefined) as { value?: unknown } | undefined
+  const actionValue = value?.value
   if (
     messageId === undefined ||
     chatId === undefined ||
-    typeof value !== 'object' ||
-    value === null
+    typeof actionValue !== 'object' ||
+    actionValue === null
   ) {
     return undefined
   }
@@ -185,7 +197,7 @@ export function normalizeCardAction(data: RawCardActionEvent): FeishuCardAction 
     messageId,
     chatId,
     operatorOpenId,
-    value: value as Record<string, string>,
+    value: actionValue as Record<string, string>,
   }
 }
 

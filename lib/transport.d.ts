@@ -69,6 +69,11 @@ export declare function normalizeMessageEvent(data: RawMessageEvent): FeishuMess
 /**
  * Normalize a raw `card.action.trigger` payload into a bridge action, or
  * `undefined` when no actionable payload is present. Pure function.
+ *
+ * Accepts both callback shapes: the v1 payload (fields at the root:
+ * `operator` / `action` / `context`) and the schema-2.0 callback payload
+ * (fields nested under `event`: `event.operator` / `event.action` /
+ * `event.context` - see 卡片回传交互回调).
  */
 export declare function normalizeCardAction(data: RawCardActionEvent): FeishuCardAction | undefined;
 /**
