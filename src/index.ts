@@ -22,7 +22,7 @@
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { spawn } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection, type AgentSetup, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 // Type-only: carries the `ctx.commands` and `approval/request` Context
@@ -321,8 +321,42 @@ export function apply(ctx: Context, config: Config = {}): void {
     },
   }
 
+  /**
+   * Single-bridge lock: only one process may run the bridge per data dir.
+   * Multiple TUI instances on the same profile would each open a Feishu
+   * long connection, all receive every message and all reply with cards.
+   * A lock file holding a live pid blocks the second instance; a stale
+   * lock (crashed process) is taken over.
+   */
+  const acquireBridgeLock = (): boolean => {
+    const lockPath = join(dataDir, 'bridge.lock')
+    try {
+      const pid = Number(readFileSync(lockPath, 'utf8').trim())
+      if (Number.isInteger(pid) && pid > 0) {
+        try {
+          process.kill(pid, 0) // signal 0 only probes existence
+          logger.warn(`[dsh-tui-feishu] bridge lock held by pid ${pid}; skipping bridge start in this instance`)
+          return false
+        } catch {
+          // Stale lock: the holder is gone, take it over.
+        }
+      }
+    } catch {
+      // No lock file yet.
+    }
+    try {
+      mkdirSync(dataDir, { recursive: true })
+      writeFileSync(lockPath, String(process.pid), { flag: 'wx' })
+      return true
+    } catch {
+      logger.warn('[dsh-tui-feishu] could not acquire bridge lock; skipping bridge start')
+      return false
+    }
+  }
+
   /** Mount the bridge for one credential set (replacing any active one). */
   const startBridge = (credentials: StoredCredentials): void => {
+    if (!acquireBridgeLock()) return
     if (active !== undefined) {
       void active.bridge.dispose()
       active.reminders.dispose()
