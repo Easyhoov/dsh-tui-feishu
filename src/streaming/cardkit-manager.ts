@@ -75,7 +75,7 @@ export class CardKitStreamingManager implements CardStream {
   private readonly locale: CardLocale
   private readonly showReasoning: boolean
   private readonly sweepTimer: ReturnType<typeof setInterval> | null
-  private readonly logger: { warn(message: string): void }
+  private readonly logger: { info(message: string): void; warn(message: string): void }
 
   constructor(
     private readonly transport: LarkTransport,
@@ -85,14 +85,14 @@ export class CardKitStreamingManager implements CardStream {
       sweepIntervalMs?: number
       locale?: CardLocale
       showReasoning?: boolean
-      logger?: { warn(message: string): void }
+      logger?: { info?(message: string): void; warn(message: string): void }
     } = {},
   ) {
     this.throttleMs = options.throttleMs ?? 100
     this.cardTtlMs = options.cardTtlMs ?? 15 * 60_000
     this.locale = options.locale ?? 'zh'
     this.showReasoning = options.showReasoning ?? true
-    this.logger = options.logger ?? { warn: () => {} }
+    this.logger = { info: () => {}, warn: () => {}, ...options.logger }
     this.sweepTimer = setInterval(() => this.sweepStale(), options.sweepIntervalMs ?? SWEEP_INTERVAL_MS)
     this.sweepTimer.unref?.()
   }
@@ -227,6 +227,9 @@ export class CardKitStreamingManager implements CardStream {
         card.seq += 1
         await this.transport.cardkitUpdate(card.cardId, finalCard, card.seq)
         card.lastSnapshot = snapshot
+        this.logger.info(
+          `cardkit card finalized: chat=${card.chatId} msg=${card.messageId} status=${snapshot.status} elements=${(finalCard.body as { elements?: unknown[] }).elements?.length ?? 0}`,
+        )
         return true
       }
       const actions: Record<string, unknown>[] = []

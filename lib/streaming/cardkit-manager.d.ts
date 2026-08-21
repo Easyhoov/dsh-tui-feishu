@@ -34,6 +34,7 @@ export declare class CardKitStreamingManager implements CardStream {
         locale?: CardLocale;
         showReasoning?: boolean;
         logger?: {
+            info?(message: string): void;
             warn(message: string): void;
         };
     });

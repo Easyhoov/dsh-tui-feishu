@@ -46,7 +46,7 @@ function escapeMd(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/([`*_{}\[\]<>])/g, '\\$1')
 }
 
-/** A collapsible panel (schema 2.0). */
+/** A collapsible panel (schema 2.0). One icon only: the emoji in the title. */
 function collapsiblePanel(options: {
   title: string
   elements: unknown[]
@@ -59,9 +59,6 @@ function collapsiblePanel(options: {
     header: {
       title: { tag: 'plain_text', content: options.title, text_color: 'grey', text_size: 'notation' },
       vertical_align: 'center',
-      icon: { tag: 'standard_icon', token: 'down-small-ccm_outlined', color: 'grey', size: '16px 16px' },
-      icon_position: 'right',
-      icon_expanded_angle: -180,
     },
     border: { color: 'grey', corner_radius: '5px' },
     vertical_spacing: '4px',
@@ -132,7 +129,7 @@ export function buildToolPanel(
       elementId: options.elementId ?? KIT_TOOL_PANEL_ELEMENT,
     })
   }
-  const parts = [t('toolUse', locale), t('steps', locale).replace('{}', String(steps.length))]
+  const parts = [`🛠️ ${t('toolUse', locale)}`, t('steps', locale).replace('{}', String(steps.length))]
   const running = steps.filter(step => step.status === 'running').length
   if (running > 0) parts.push(`⏳ ${running}`)
   return collapsiblePanel({
@@ -151,11 +148,10 @@ export function buildReasoningPanel(
 ): Record<string, unknown> {
   const thinkRows = rows.filter((row): row is Extract<CardRow, { kind: 'think' }> => row.kind === 'think')
   const text = thinkRows.map(row => row.text).join('\n')
-  // One icon only: the collapsible arrow. The title is plain text (hermes
-  // pairs 💭 with the arrow, which reads as two icons).
+  // One icon only: the 💭 emoji in the title (no collapsible arrow).
   const label = thinkRows.length === 0 ? t('thinkingPanel', locale) : t('thought', locale)
   return collapsiblePanel({
-    title: label,
+    title: `💭 ${label}`,
     expanded: options.expanded ?? true,
     elements: [
       {
@@ -226,8 +222,9 @@ export function buildCardKitStreamingCard(
   elements.push({
     tag: 'button',
     element_id: 'btn_stop',
-    text: { tag: 'plain_text', content: '⏹ Stop' },
+    text: { tag: 'plain_text', content: t('stopButton', locale) },
     type: 'danger',
+    size: 'small',
     behaviors: [{ type: 'callback', value: { kind: 'stop' } }],
   })
   // No card header (hermes's default: header.enabled=false) - the status

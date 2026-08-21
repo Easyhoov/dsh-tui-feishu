@@ -41,6 +41,7 @@ export const COPY: Record<string, Copy> = {
   statusStopped: { zh: '🛑 已停止', en: '🛑 Stopped' },
   toolUse: { zh: '工具执行', en: 'Tool use' },
   toolPending: { zh: '🛠️ 等待工具执行', en: '🛠️ Tool use pending' },
+  stopButton: { zh: '⏹ 停止', en: '⏹ Stop' },
 }
 
 /** Pick one language's copy for a key. */
