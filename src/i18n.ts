@@ -14,6 +14,7 @@ export type Copy = Record<CardLocale, string>
 
 export const COPY: Record<string, Copy> = {
   thinking: { zh: '💭 思考…', en: '💭 Thinking…' },
+  thinkingPanel: { zh: '思考中', en: 'Thinking' },
   workingNote: { zh: '… 思考中', en: '… working' },
   doneNote: { zh: '✅ 完成', en: '✅ Done' },
   stoppedNote: { zh: '⏹ 已停止', en: '⏹ Stopped' },

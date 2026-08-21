@@ -483,7 +483,11 @@ export function apply(ctx: Context, config: Config = {}): void {
       .then(() =>
         transport
           .start()
-          .then(() => logger.info(`[dsh-tui-feishu] bridge ready for app ${credentials.appId}`))
+          .then(() =>
+            logger.info(
+              `[dsh-tui-feishu] bridge ready for app ${credentials.appId} (card engine: ${config.cardEngine ?? 'v1'})`,
+            ),
+          )
           .catch((error: unknown) => {
             logger.error(`[dsh-tui-feishu] bridge start failed: ${String(error)}`)
           }),

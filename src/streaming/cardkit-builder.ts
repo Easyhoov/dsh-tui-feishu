@@ -132,7 +132,7 @@ export function buildToolPanel(
       elementId: options.elementId ?? KIT_TOOL_PANEL_ELEMENT,
     })
   }
-  const parts = [`🛠️ ${t('toolUse', locale)}`, t('steps', locale).replace('{}', String(steps.length))]
+  const parts = [t('toolUse', locale), t('steps', locale).replace('{}', String(steps.length))]
   const running = steps.filter(step => step.status === 'running').length
   if (running > 0) parts.push(`⏳ ${running}`)
   return collapsiblePanel({
@@ -151,9 +151,11 @@ export function buildReasoningPanel(
 ): Record<string, unknown> {
   const thinkRows = rows.filter((row): row is Extract<CardRow, { kind: 'think' }> => row.kind === 'think')
   const text = thinkRows.map(row => row.text).join('\n')
-  const label = thinkRows.length === 0 ? t('thinking', locale) : t('thought', locale)
+  // One icon only: the collapsible arrow. The title is plain text (hermes
+  // pairs 💭 with the arrow, which reads as two icons).
+  const label = thinkRows.length === 0 ? t('thinkingPanel', locale) : t('thought', locale)
   return collapsiblePanel({
-    title: `💭 ${label}`,
+    title: label,
     expanded: options.expanded ?? true,
     elements: [
       {
