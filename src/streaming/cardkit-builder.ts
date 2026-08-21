@@ -15,7 +15,7 @@
  * @module dsh-tui-feishu/streaming/cardkit-builder
  */
 
-import type { CardFooter, CardRow, CardSnapshot, CardStatus } from '../cards.js'
+import type { CardFooter, CardRow, CardSnapshot } from '../cards.js'
 import { splitLongText } from '../cardmd.js'
 import { t, type CardLocale } from '../i18n.js'
 import { resolveToolDescriptor, toolDisplayTitle } from '../tools.js'
@@ -28,14 +28,6 @@ export const KIT_REASONING_TEXT_ELEMENT = 'reasoning_text'
 
 /** The animated loading icon hermes-lark-streaming ships on streaming cards. */
 const LOADING_IMG_KEY = 'img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg'
-
-/** Header states, matching hermes-lark-streaming's card header. */
-const HEADER_STATES: Record<CardStatus, { template: string; labelKey: string }> = {
-  working: { template: 'blue', labelKey: 'processing' },
-  done: { template: 'green', labelKey: 'statusCompleted' },
-  error: { template: 'red', labelKey: 'statusError' },
-  stopped: { template: 'red', labelKey: 'statusStopped' },
-}
 
 /** Icon tokens for row statuses (hermes colors). */
 const STATUS_INFO: Record<'running' | 'done' | 'error', { labelKey: string; color: string }> = {
@@ -236,7 +228,9 @@ export function buildCardKitStreamingCard(
     type: 'danger',
     behaviors: [{ type: 'callback', value: { kind: 'stop' } }],
   })
-  const header = HEADER_STATES[snapshot.status] ?? HEADER_STATES['working']
+  // No card header (hermes's default: header.enabled=false) - the status
+  // lives in the footer of the terminal card and the loading icon/panels of
+  // the streaming card.
   return {
     schema: '2.0',
     config: {
@@ -248,10 +242,6 @@ export function buildCardKitStreamingCard(
       },
       wide_screen_mode: true,
       summary: { content: snapshot.title.slice(0, 120) },
-    },
-    header: {
-      title: { tag: 'plain_text', content: t(header.labelKey, locale) },
-      template: header.template,
     },
     body: { elements },
   }
@@ -291,17 +281,12 @@ export function buildCardKitCompleteCard(
       behaviors: [{ type: 'callback', value: { kind: 'detail' } }],
     })
   }
-  const header = HEADER_STATES[snapshot.status] ?? HEADER_STATES['done']
   return {
     schema: '2.0',
     config: {
       wide_screen_mode: true,
       update_multi: true,
       summary: { content: (snapshot.content || snapshot.title).slice(0, 120) },
-    },
-    header: {
-      title: { tag: 'plain_text', content: t(header.labelKey, locale) },
-      template: header.template,
     },
     body: { elements },
   }
