@@ -18,7 +18,8 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
-import type { CardRow, CardSnapshot, CardStatus, StreamingCardManager } from './cards.js'
+import type { CardFooter, CardRow, CardSnapshot, CardStatus, StreamingCardManager } from './cards.js'
+import { stripReasoningTags } from './cardmd.js'
 import { parseReminderTime, describeReminder, type Reminder, type ReminderStore } from './reminders.js'
 import { redactInlineSecrets, sanitizeToolDetail } from './redact.js'
 import { resolveToolDescriptor } from './tools.js'
@@ -104,6 +105,10 @@ interface TurnState {
   openThink: boolean
   expanded: boolean
   sessionId: string
+  /** Epoch ms when the turn's card was opened (footer elapsed). */
+  startedAt: number
+  /** Tool-call start times by call id (row duration). */
+  toolStarts: Map<string, number>
 }
 
 /** A pending approval card. */
@@ -709,6 +714,8 @@ export class Bridge {
       openThink: false,
       expanded: false,
       sessionId: String(agent.id),
+      startedAt: Date.now(),
+      toolStarts: new Map(),
     })
     try {
       await this.options.cards.open(chatId, title)
@@ -783,7 +790,7 @@ export class Bridge {
           const queue = this.queuedTurns.get(chatId)
           const queuedTitle = queue !== undefined && queue.length > 0 ? queue.shift() : undefined
           if (queue !== undefined && queue.length === 0) this.queuedTurns.delete(chatId)
-          state = { title: queuedTitle ?? '⏰ Agent', content: '', rows: [], openThink: false, expanded: false, sessionId }
+          state = { title: queuedTitle ?? '⏰ Agent', content: '', rows: [], openThink: false, expanded: false, sessionId, startedAt: Date.now(), toolStarts: new Map() }
           this.turns.set(chatId, state)
           try {
             await this.options.cards.open(chatId, state.title)
@@ -797,8 +804,13 @@ export class Bridge {
         if (state === undefined) return
         const chunk = data.chunk as { type?: string; text?: string } | undefined
         if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') {
-          state.content += chunk.text
-          this.syncCard(chatId, state, 'working')
+          // Deltas may carry reasoning tags; strip them so internal thinking
+          // never renders (a delta fully inside a tag contributes nothing).
+          const text = stripReasoningTags(chunk.text)
+          if (text !== '') {
+            state.content += text
+            this.syncCard(chatId, state, 'working')
+          }
         } else if (chunk?.type === 'reasoning-delta' && typeof chunk.text === 'string') {
           if (!state.openThink) {
             state.rows = [...state.rows, { kind: 'think', text: chunk.text }]
@@ -820,11 +832,13 @@ export class Bridge {
         if (state === undefined) return
         state.openThink = false
         const args = String(data.arguments ?? '')
+        const callId = data.callId === undefined ? undefined : String(data.callId)
+        if (callId !== undefined) state.toolStarts.set(callId, Date.now())
         state.rows = [
           ...state.rows,
           {
             kind: 'tool' as const,
-            ...(data.callId === undefined ? {} : { callId: String(data.callId) }),
+            ...(callId === undefined ? {} : { callId }),
             name: String(data.name ?? 'tool'),
             summary: toolRowSummary(String(data.name ?? ''), args),
             status: 'running' as const,
@@ -873,9 +887,18 @@ export class Bridge {
                 : ((data.error as { message?: string } | undefined)?.message ?? '')
             const errorText = redactInlineSecrets(rawError)
             const detail = [resultText, errorText].filter(part => part !== '').join('\n')
+            let durationMs: number | undefined
+            if (row.callId !== undefined) {
+              const started = state.toolStarts.get(row.callId)
+              if (started !== undefined) {
+                durationMs = Date.now() - started
+                state.toolStarts.delete(row.callId)
+              }
+            }
             rows[matched] = {
               ...row,
               status: error ? 'error' : 'done',
+              ...(durationMs === undefined ? {} : { durationMs }),
               ...(detail === '' ? {} : { detailOut: detail.slice(0, DETAIL_CAPTURE_CHARS) }),
             }
             state.rows = rows
@@ -887,8 +910,8 @@ export class Bridge {
       case 'assistant/message': {
         if (state === undefined) return
         state.openThink = false
-        const text = assistantText(
-          (data.message as { content?: readonly unknown[] } | undefined)?.content,
+        const text = stripReasoningTags(
+          assistantText((data.message as { content?: readonly unknown[] } | undefined)?.content),
         )
         if (text !== '') state.content = text
         this.syncCard(chatId, state, 'working')
@@ -905,6 +928,16 @@ export class Bridge {
           )
         }
         state.openThink = false
+        const footer: CardFooter | undefined =
+          state.startedAt === 0
+            ? undefined
+            : {
+                elapsedMs: Date.now() - state.startedAt,
+                ...(() => {
+                  const model = this.options.modelControl?.get(chatId)?.model
+                  return model === undefined || model === '' ? {} : { model }
+                })(),
+              }
         this.turns.delete(chatId)
         this.lastSnapshots.set(chatId, {
           title: state.title,
@@ -912,9 +945,10 @@ export class Bridge {
           rows: state.rows,
           status,
           expanded: state.expanded,
+          ...(footer === undefined ? {} : { footer }),
         })
         if (this.options.cards.isActive(chatId)) {
-          await this.options.cards.finalize(chatId, status)
+          await this.options.cards.finalize(chatId, status, footer)
         } else {
           // The streaming card never opened (e.g. a rejected card payload):
           // don't lose the reply - fall back to plain text.

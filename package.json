@@ -21,7 +21,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node test/smoke.mjs && node test/redact.mjs && node test/robustness.mjs",
+    "test": "node test/smoke.mjs && node test/redact.mjs && node test/robustness.mjs && node test/cards-p1.mjs",
     "validate:manifest": "node scripts/validate-manifest.mjs",
     "verify": "npm run build && npm run validate:manifest && npm test"
   },

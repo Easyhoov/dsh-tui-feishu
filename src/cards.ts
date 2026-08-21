@@ -18,6 +18,9 @@
 
 import type { LarkTransport } from './transport.js'
 import { isTerminalMessageCode, markUnavailable } from './unavailable.js'
+import { t, type CardLocale } from './i18n.js'
+import { formatCodeBlock, prettyJsonOrText, splitLongText } from './cardmd.js'
+import { toolDisplayTitle } from './tools.js'
 
 /** Terminal status of a turn card. */
 export type CardStatus = 'working' | 'done' | 'stopped' | 'error'
@@ -31,11 +34,19 @@ export type CardRow =
       readonly name: string
       readonly summary: string
       readonly status: 'running' | 'done' | 'error'
+      /** Tool wall time, shown on the row when finished. */
+      readonly durationMs?: number
       /** Raw tool arguments (truncated), shown in the expanded detail view. */
       readonly detailIn?: string
       /** Tool result text (truncated), shown in the expanded detail view. */
       readonly detailOut?: string
     }
+
+/** Terminal metadata rendered as a card footer (best effort). */
+export interface CardFooter {
+  readonly elapsedMs?: number
+  readonly model?: string
+}
 
 /** A full card snapshot - the single source for every patch. */
 export interface CardSnapshot {
@@ -45,10 +56,12 @@ export interface CardSnapshot {
   readonly status: CardStatus
   /** Render activity rows with their argument/result details. */
   readonly expanded?: boolean
+  /** Terminal metadata (status/elapsed/model) for the footer. */
+  readonly footer?: CardFooter
 }
 
-/** Keep the card body bounded: the tail is the part the user is waiting on. */
-const MAX_BODY_CHARS = 3000
+/** Keep the card body bounded (the tail is what the user is waiting on). */
+const MAX_BODY_CHARS = 12000
 const STATUS_TEMPLATE: Record<CardStatus, string> = {
   working: 'blue',
   done: 'green',
@@ -118,7 +131,7 @@ export function toFeishuMarkdown(markdown: string): string {
 
 function truncateTail(text: string): string {
   if (text.length <= MAX_BODY_CHARS) return text
-  return `…(earlier output trimmed)\n${text.slice(-MAX_BODY_CHARS)}`
+  return `${t('earlierTrimmed', 'zh')}\n${text.slice(-MAX_BODY_CHARS)}`
 }
 
 /** Detail blocks stay small - the full output is on the host anyway. */
@@ -127,57 +140,98 @@ const MAX_THINK_CHARS = 600
 
 function truncateMiddle(text: string, max: number): string {
   if (text.length <= max) return text
-  return `${text.slice(0, max)}\n…（更多内容略）`
+  return `${text.slice(0, max)}\n${t('truncated', 'zh')}`
 }
 
-function rowLine(row: CardRow): string {
-  if (row.kind === 'think') return `💭 _思考…_`
+function formatElapsed(ms: number): string {
+  const seconds = ms / 1000
+  return seconds < 60 ? `${seconds.toFixed(1)}s` : `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`
+}
+
+function rowLine(row: CardRow, locale: CardLocale): string {
+  if (row.kind === 'think') return t('thinking', locale)
   const icon = ROW_ICON[row.status]
-  const label = row.summary === '' ? row.name : `${row.name}: ${row.summary}`
-  return `${icon} ${label}`
+  const title = toolDisplayTitle(row.name)
+  const label = row.summary === '' ? title : `${title}: ${row.summary}`
+  const duration = row.durationMs !== undefined ? ` · ${formatElapsed(row.durationMs)}` : ''
+  return `${icon} ${label}${duration}`
 }
 
 /** Extra lines for one row in the expanded view. */
-function rowDetailLines(row: CardRow): string[] {
+function rowDetailLines(row: CardRow, locale: CardLocale): string[] {
   if (row.kind === 'think') {
     return row.text === '' ? [] : [`💭 ${truncateMiddle(row.text.trim(), MAX_THINK_CHARS)}`]
   }
   const lines: string[] = []
   if (row.detailIn !== undefined && row.detailIn !== '') {
-    lines.push(`　📥 参数：${truncateMiddle(row.detailIn, MAX_DETAIL_CHARS)}`)
+    lines.push(`　${t('detailArgs', locale)}：${truncateMiddle(row.detailIn, MAX_DETAIL_CHARS)}`)
   }
   if (row.detailOut !== undefined && row.detailOut !== '') {
-    lines.push(`　📤 结果：${truncateMiddle(row.detailOut, MAX_DETAIL_CHARS)}`)
+    const isError = row.status === 'error'
+    const { language, text } = prettyJsonOrText(row.detailOut)
+    const body = formatCodeBlock(truncateMiddle(text, MAX_DETAIL_CHARS), language) || truncateMiddle(text, MAX_DETAIL_CHARS)
+    lines.push(`　${isError ? t('detailError', locale) : t('detailResult', locale)}：`)
+    lines.push(body)
   }
   return lines
 }
 
+/** Footer lines (status · elapsed · model) for a finished card. */
+function footerLines(snapshot: CardSnapshot, locale: CardLocale): string[] {
+  const footer = snapshot.footer
+  if (footer === undefined) return []
+  const parts: string[] = []
+  const status =
+    snapshot.status === 'error'
+      ? t('errorNote', locale)
+      : snapshot.status === 'stopped'
+        ? t('stopped', locale)
+        : t('doneNote', locale)
+  parts.push(status)
+  if (footer.elapsedMs !== undefined && footer.elapsedMs > 0) {
+    parts.push(`${t('elapsed', locale)} ${formatElapsed(footer.elapsedMs)}`)
+  }
+  if (footer.model !== undefined && footer.model !== '') {
+    parts.push(`${t('model', locale)} ${footer.model}`)
+  }
+  return parts.length === 0 ? [] : [`${parts.join(' · ')}`]
+}
+
 /** Build the streaming-card JSON for one snapshot. */
-export function buildCard(snapshot: CardSnapshot): unknown {
+export function buildCard(snapshot: CardSnapshot, locale: CardLocale = 'zh'): unknown {
   const elements: Record<string, unknown>[] = []
   if (snapshot.rows.length > 0) {
     const lines: string[] = []
     for (const row of snapshot.rows) {
-      lines.push(rowLine(row))
-      if (snapshot.expanded === true) lines.push(...rowDetailLines(row))
+      lines.push(rowLine(row, locale))
+      if (snapshot.expanded === true) lines.push(...rowDetailLines(row, locale))
     }
     elements.push({ tag: 'markdown', content: lines.join('\n') })
   }
+  // Long bodies split into multiple markdown elements (each ≤ 2400 chars).
   const body = truncateTail(toFeishuMarkdown(snapshot.content)).trim()
   if (body !== '') {
-    if (elements.length > 0) elements.push({ tag: 'hr' })
-    elements.push({ tag: 'markdown', content: body })
+    for (const chunk of splitLongText(body)) {
+      if (elements.length > 0) elements.push({ tag: 'hr' })
+      elements.push({ tag: 'markdown', content: chunk })
+    }
   }
-  if (snapshot.status !== 'working' || body === '') {
+  const footer = footerLines(snapshot, locale)
+  if (footer.length > 0) {
+    if (elements.length > 0) elements.push({ tag: 'hr' })
+    elements.push({ tag: 'note', elements: [{ tag: 'plain_text', content: footer.join('\n') }] })
+  }
+  // The status note is skipped when a footer already carries it.
+  if ((snapshot.status !== 'working' || body === '') && footer.length === 0) {
     if (elements.length > 0) elements.push({ tag: 'hr' })
     const note =
       snapshot.status === 'working'
-        ? '… 思考中'
+        ? t('workingNote', locale)
         : snapshot.status === 'error'
-          ? '⚠️ 回合出错结束'
+          ? t('errorNote', locale)
           : snapshot.status === 'stopped'
-            ? '⏹ 已停止'
-            : '✅ 完成'
+            ? t('stoppedNote', locale)
+            : t('doneNote', locale)
     elements.push({ tag: 'note', elements: [{ tag: 'plain_text', content: note }] })
   }
   const actions: Record<string, unknown>[] = []
@@ -216,6 +270,8 @@ interface ActiveCard {
   readonly chatId: string
   messageId: string
   pending: CardSnapshot | null
+  /** The last snapshot actually flushed to Feishu (for terminal re-renders). */
+  lastFlushed: CardSnapshot | null
   timer: ReturnType<typeof setTimeout> | null
   flushing: boolean
   closed: boolean
@@ -243,6 +299,7 @@ export class StreamingCardManager {
   private readonly lastMessageIds = new Map<string, string>()
   private readonly throttleMs: number
   private readonly cardTtlMs: number
+  private readonly locale: CardLocale
   private readonly sweepTimer: ReturnType<typeof setInterval> | null
   private readonly logger: { warn(message: string): void }
 
@@ -252,11 +309,13 @@ export class StreamingCardManager {
       throttleMs?: number
       cardTtlMs?: number
       sweepIntervalMs?: number
+      locale?: CardLocale
       logger?: { warn(message: string): void }
     } = {},
   ) {
     this.throttleMs = options.throttleMs ?? 500
     this.cardTtlMs = options.cardTtlMs ?? 15 * 60_000
+    this.locale = options.locale ?? 'zh'
     this.logger = options.logger ?? { warn: () => {} }
     this.sweepTimer = setInterval(
       () => this.sweepStale(),
@@ -269,7 +328,7 @@ export class StreamingCardManager {
   async open(chatId: string, title: string): Promise<void> {
     const stale = this.active.get(chatId)
     if (stale !== undefined) await this.finalize(chatId, 'done')
-    const card = buildCard({ title, content: '', rows: [], status: 'working' })
+    const card = buildCard({ title, content: '', rows: [], status: 'working' }, this.locale)
     const messageId = await this.transport.sendCard(chatId, card)
     this.lastMessageIds.set(chatId, messageId)
     const now = Date.now()
@@ -277,6 +336,7 @@ export class StreamingCardManager {
       chatId,
       messageId,
       pending: null,
+      lastFlushed: null,
       timer: null,
       flushing: false,
       closed: false,
@@ -299,8 +359,17 @@ export class StreamingCardManager {
     }
   }
 
-  /** Mark the card terminal: flush pending content, then retire it. */
-  async finalize(chatId: string, status: 'done' | 'error' | 'stopped'): Promise<void> {
+  /**
+   * Mark the card terminal: stage the terminal status (plus optional footer
+   * metadata) and flush, then retire it. A terminal snapshot is staged even
+   * when nothing is pending, so finished cards always render their final
+   * state (status note / footer) rather than freezing mid-stream.
+   */
+  async finalize(
+    chatId: string,
+    status: 'done' | 'error' | 'stopped',
+    footer?: CardFooter,
+  ): Promise<void> {
     const card = this.active.get(chatId)
     if (card === undefined || card.closed) return
     card.closed = true
@@ -308,8 +377,9 @@ export class StreamingCardManager {
       clearTimeout(card.timer)
       card.timer = null
     }
-    if (card.pending !== null) {
-      card.pending = { ...card.pending, status }
+    const base = card.pending ?? card.lastFlushed
+    if (base !== null) {
+      card.pending = { ...base, status, ...(footer === undefined ? {} : { footer }) }
       await this.flush(card)
     }
     this.active.delete(chatId)
@@ -344,7 +414,7 @@ export class StreamingCardManager {
     const messageId = this.lastMessageIds.get(chatId)
     if (messageId === undefined) return
     try {
-      await this.transport.updateCard(messageId, buildCard(snapshot))
+      await this.transport.updateCard(messageId, buildCard(snapshot, this.locale))
     } catch (error: unknown) {
       if (this.handlePatchFailure(messageId, error)) return
       this.logger.warn(`card refresh failed: ${String(error)}`)
@@ -411,7 +481,8 @@ export class StreamingCardManager {
         const snapshot = card.pending
         card.pending = null
         try {
-          await this.transport.updateCard(card.messageId, buildCard(snapshot))
+          await this.transport.updateCard(card.messageId, buildCard(snapshot, this.locale))
+          card.lastFlushed = snapshot
         } catch (error: unknown) {
           if (this.handlePatchFailure(card.messageId, error)) return
           this.logger.warn(`streaming card patch failed (continuing): ${String(error)}`)

@@ -40,6 +40,8 @@ export interface Config {
     readonly cardThrottleMs?: number;
     /** Retire a streaming card after this many ms without patch activity (default 900000 = 15min). */
     readonly cardTtlMs?: number;
+    /** Card copy language (default zh). */
+    readonly locale?: 'zh' | 'en';
     /** Allowed Feishu sender open ids; empty serves every p2p sender. */
     readonly allowedUsers?: string[];
 }

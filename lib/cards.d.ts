@@ -16,6 +16,7 @@
  * @module dsh-tui-feishu/cards
  */
 import type { LarkTransport } from './transport.js';
+import { type CardLocale } from './i18n.js';
 /** Terminal status of a turn card. */
 export type CardStatus = 'working' | 'done' | 'stopped' | 'error';
 /** One collapsed activity row above the reply body. */
@@ -28,11 +29,18 @@ export type CardRow = {
     readonly name: string;
     readonly summary: string;
     readonly status: 'running' | 'done' | 'error';
+    /** Tool wall time, shown on the row when finished. */
+    readonly durationMs?: number;
     /** Raw tool arguments (truncated), shown in the expanded detail view. */
     readonly detailIn?: string;
     /** Tool result text (truncated), shown in the expanded detail view. */
     readonly detailOut?: string;
 };
+/** Terminal metadata rendered as a card footer (best effort). */
+export interface CardFooter {
+    readonly elapsedMs?: number;
+    readonly model?: string;
+}
 /** A full card snapshot - the single source for every patch. */
 export interface CardSnapshot {
     readonly title: string;
@@ -41,6 +49,8 @@ export interface CardSnapshot {
     readonly status: CardStatus;
     /** Render activity rows with their argument/result details. */
     readonly expanded?: boolean;
+    /** Terminal metadata (status/elapsed/model) for the footer. */
+    readonly footer?: CardFooter;
 }
 /**
  * Feishu card markdown is a narrow subset (bold/italic/links; no headings,
@@ -52,7 +62,7 @@ export interface CardSnapshot {
  */
 export declare function toFeishuMarkdown(markdown: string): string;
 /** Build the streaming-card JSON for one snapshot. */
-export declare function buildCard(snapshot: CardSnapshot): unknown;
+export declare function buildCard(snapshot: CardSnapshot, locale?: CardLocale): unknown;
 /**
  * Manages one active streaming card per chat: throttled, coalesced patches;
  * a failed patch never kills the stream (logged, latest snapshot retried),
@@ -69,12 +79,14 @@ export declare class StreamingCardManager {
     private readonly lastMessageIds;
     private readonly throttleMs;
     private readonly cardTtlMs;
+    private readonly locale;
     private readonly sweepTimer;
     private readonly logger;
     constructor(transport: LarkTransport, options?: {
         throttleMs?: number;
         cardTtlMs?: number;
         sweepIntervalMs?: number;
+        locale?: CardLocale;
         logger?: {
             warn(message: string): void;
         };
@@ -83,8 +95,13 @@ export declare class StreamingCardManager {
     open(chatId: string, title: string): Promise<void>;
     /** Stage the next snapshot; flushed after `throttleMs` or in-flight settle. */
     patch(chatId: string, snapshot: CardSnapshot): void;
-    /** Mark the card terminal: flush pending content, then retire it. */
-    finalize(chatId: string, status: 'done' | 'error' | 'stopped'): Promise<void>;
+    /**
+     * Mark the card terminal: stage the terminal status (plus optional footer
+     * metadata) and flush, then retire it. A terminal snapshot is staged even
+     * when nothing is pending, so finished cards always render their final
+     * state (status note / footer) rather than freezing mid-stream.
+     */
+    finalize(chatId: string, status: 'done' | 'error' | 'stopped', footer?: CardFooter): Promise<void>;
     /** Whether a chat currently has an active streaming card. */
     isActive(chatId: string): boolean;
     /** Message id of the active card, for button routing. */
