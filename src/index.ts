@@ -22,7 +22,7 @@
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { spawn } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection, type AgentSetup, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 // Type-only: carries the `ctx.commands` and `approval/request` Context
@@ -330,6 +330,7 @@ export function apply(ctx: Context, config: Config = {}): void {
    */
   const acquireBridgeLock = (): boolean => {
     const lockPath = join(dataDir, 'bridge.lock')
+    let stale = false
     try {
       const pid = Number(readFileSync(lockPath, 'utf8').trim())
       if (Number.isInteger(pid) && pid > 0) {
@@ -339,6 +340,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           return false
         } catch {
           // Stale lock: the holder is gone, take it over.
+          stale = true
         }
       }
     } catch {
@@ -346,7 +348,16 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
     try {
       mkdirSync(dataDir, { recursive: true })
-      writeFileSync(lockPath, String(process.pid), { flag: 'wx' })
+      // A stale lock must be overwritten; 'wx' would fail on the leftover file.
+      writeFileSync(lockPath, String(process.pid), { flag: stale ? 'w' : 'wx' })
+      // Clean up on a normal exit; a crash leaves the file for the stale path.
+      process.once('exit', () => {
+        try {
+          if (readFileSync(lockPath, 'utf8').trim() === String(process.pid)) unlinkSync(lockPath)
+        } catch {
+          // Already gone or unreadable - nothing to clean.
+        }
+      })
       return true
     } catch {
       logger.warn('[dsh-tui-feishu] could not acquire bridge lock; skipping bridge start')
