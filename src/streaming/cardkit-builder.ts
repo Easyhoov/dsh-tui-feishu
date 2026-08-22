@@ -113,7 +113,20 @@ function toolStepElements(row: Extract<CardRow, { kind: 'tool' }>, locale: CardL
   return elements
 }
 
-/** Build the tool panel element from rows (or the pending placeholder). */
+/** How many of the NEWEST tool steps render as full rows in the panel. */
+const MAX_PANEL_STEPS = 30
+/** History summary entries shown inside the folded history element. */
+const MAX_HISTORY_LINES = 20
+/** History text budget (keeps the folded element small). */
+const MAX_HISTORY_CHARS = 700
+
+/** Build the tool panel element from rows (or the pending placeholder).
+ *
+ *  Long turns keep the panel bounded: only the newest `MAX_PANEL_STEPS` steps
+ *  render as full rows; earlier steps fold into one compact history element
+ *  (title-only lines) so the card never grows unbounded past the platform's
+ *  element budget (a full hermes-style card split stays on the roadmap).
+ */
 export function buildToolPanel(
   rows: readonly CardRow[],
   locale: CardLocale,
@@ -129,15 +142,51 @@ export function buildToolPanel(
       elementId: options.elementId ?? KIT_TOOL_PANEL_ELEMENT,
     })
   }
+  const history = steps.slice(0, Math.max(0, steps.length - MAX_PANEL_STEPS))
+  const visible = steps.slice(-MAX_PANEL_STEPS)
   const parts = [`🛠️ ${t('toolUse', locale)}`, t('steps', locale).replace('{}', String(steps.length))]
   const running = steps.filter(step => step.status === 'running').length
   if (running > 0) parts.push(`⏳ ${running}`)
+  if (history.length > 0) parts.push(`前 ${history.length} 步折叠`)
+  const elements: unknown[] = []
+  if (history.length > 0) {
+    elements.push(buildToolHistoryElement(history, locale))
+  }
+  elements.push(...visible.flatMap(step => toolStepElements(step, locale)))
   return collapsiblePanel({
     title: parts.join(' · '),
     expanded: options.expanded ?? true,
-    elements: steps.slice(0, 30).flatMap(step => toolStepElements(step, locale)),
+    elements,
     elementId: options.elementId ?? KIT_TOOL_PANEL_ELEMENT,
   })
+}
+
+/** One compact markdown element summarizing the folded older steps. */
+function buildToolHistoryElement(
+  history: readonly Extract<CardRow, { kind: 'tool' }>[],
+  locale: CardLocale,
+): Record<string, unknown> {
+  const lines: string[] = []
+  for (const step of history) {
+    if (lines.length >= MAX_HISTORY_LINES) break
+    const title = toolDisplayTitle(step.name)
+    const label = step.summary === '' ? title : `${title}: ${step.summary}`
+    lines.push(`· ${label}`)
+  }
+  const omitted = history.length - lines.length
+  if (omitted > 0) lines.push(`…（共 ${history.length} 步，更早省略）`)
+  let text = `**📜 ${t('toolHistory', locale)}**\n${lines.join('\n')}`
+  if (text.length > MAX_HISTORY_CHARS) text = `${text.slice(0, MAX_HISTORY_CHARS)}…`
+  return {
+    tag: 'div',
+    margin: '0px 0px 0px 0px',
+    text: {
+      tag: 'lark_md',
+      content: text,
+      text_color: 'grey',
+      text_size: 'notation',
+    },
+  }
 }
 
 /** Build the reasoning panel element from think rows. */

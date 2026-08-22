@@ -21,7 +21,13 @@ export declare const KIT_ANSWER_ELEMENT = "streaming_content";
 export declare const KIT_TOOL_PANEL_ELEMENT = "tool_panel";
 export declare const KIT_REASONING_PANEL_ELEMENT = "reasoning_panel";
 export declare const KIT_REASONING_TEXT_ELEMENT = "reasoning_text";
-/** Build the tool panel element from rows (or the pending placeholder). */
+/** Build the tool panel element from rows (or the pending placeholder).
+ *
+ *  Long turns keep the panel bounded: only the newest `MAX_PANEL_STEPS` steps
+ *  render as full rows; earlier steps fold into one compact history element
+ *  (title-only lines) so the card never grows unbounded past the platform's
+ *  element budget (a full hermes-style card split stays on the roadmap).
+ */
 export declare function buildToolPanel(rows: readonly CardRow[], locale: CardLocale, options?: {
     expanded?: boolean;
     elementId?: string;

@@ -40,6 +40,7 @@ export const COPY: Record<string, Copy> = {
   statusError: { zh: '❌ 出错', en: '❌ Error' },
   statusStopped: { zh: '🛑 已停止', en: '🛑 Stopped' },
   toolUse: { zh: '工具执行', en: 'Tool use' },
+  toolHistory: { zh: '历史工具调用', en: 'Earlier tool calls' },
   toolPending: { zh: '🛠️ 等待工具执行', en: '🛠️ Tool use pending' },
   stopButton: { zh: '⏹ 停止', en: '⏹ Stop' },
 }

@@ -347,4 +347,28 @@ ok('finalize during an in-flight flush still closes streaming and pushes the ter
   manager.dispose()
 })
 
+
+// ── long turn: tool panel stays bounded (30 newest + folded history) ────
+ok('long turns fold older tool steps into a bounded history element', () => {
+  const rows = Array.from({ length: 45 }, (_, i) => ({
+    kind: 'tool',
+    name: 'bash',
+    summary: `step-${i + 1}`,
+    status: 'done',
+  }))
+  const card = buildCardKitCompleteCard({ title: 't', content: 'x', rows, status: 'done' }, 'zh')
+  // The complete card renders the tool panel; its title carries the totals.
+  const json = JSON.stringify(card)
+  assert.ok(json.includes('45'), 'total step count in title')
+  assert.ok(json.includes('前 15 步折叠'), 'folded count reported')
+  assert.ok(json.includes('历史工具调用'), 'history element present')
+  // Panel children stay bounded: exactly 30 full rows + 1 history element
+  // (45 unfettered rows would be ~90 children).
+  const panel = card.body.elements.find(el => el.element_id === 'tool_panel')
+  const children = panel?.elements ?? []
+  assert.ok(children.length <= 61, `bounded children (${children.length} <= 61)`)
+  const fullRows = (JSON.stringify(children).match(/\*\*Run command\*\*/g) || []).length
+  assert.equal(fullRows, 30, 'exactly 30 newest steps render as full rows')
+})
+
 console.log(`CARDKIT OK (${passed} checks)`)

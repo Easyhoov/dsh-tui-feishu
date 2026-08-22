@@ -31,8 +31,10 @@ dsh plugin --profile dsh-tui add dsh-tui-feishu
 
 # 从源码：构建并打包后本地安装
 npm run verify && npm pack
-dsh plugin --profile dsh-tui add file:dsh-tui-feishu-0.2.0.tgz
+dsh plugin --profile dsh-tui add file:dsh-tui-feishu-0.3.1.tgz
 ```
+
+> 也可以直接从 [GitHub Releases](https://github.com/Easyhoov/dsh-tui-feishu/releases) 下载最新 tgz。
 
 ## 扫码配对（推荐）
 
@@ -145,9 +147,21 @@ TUI 里：
 
 回合卡片上的按钮：⏹ Stop 中断当前回合；🔍 详情 展开/收起工具调用的参数和结果（回合结束后也能展开）；🔐 审批卡片 Allow/Reject 放行或拒绝危险操作；🗂 会话列表卡片上每个会话一个「切换到 N」按钮。
 
+## 图片
+
+**入站**（飞书 → agent）：私聊发图片，桥接下载原图并经宿主附件服务以 ImageBlock 投递给 agent（视觉模型可直接看图）；附件服务不可用时降级为保存文件并附路径。需要配对应用具备 `im:resource` 权限（v0.3.0 新建的应用已包含；旧应用在飞书开发者后台开通并发布版本）。
+
+**出站**（agent → 飞书）：`resolveImages`（默认开）在回合结束时把回复里的远程图片下载并上传为飞书 `img_key`，卡片上直接显示。
+
 ## 未做（路线图）
 
-群聊 @ 路由、会话列表卡片化（目前是文本列表）、物理删除会话磁盘历史——参考实现 PGZXB/dsh-feishu 里都有成熟做法，按需要移植。
+群聊 @ 路由、物理删除会话磁盘历史（`/delete` 只从会话列表移除，磁盘日志保留）——参考实现 PGZXB/dsh-feishu 里都有成熟做法，按需要移植。
+
+## 已知限制
+
+- CardKit 工具面板最多展示最近 30 步工具调用（标题带总数，早期步骤折叠）——超长回合的拆卡机制在路线图中。
+- footer 仅展示耗时/模型：dsh 宿主事件不带 tokens/context 元数据。
+- 模型需支持视觉才能"看懂"入站图片（v0.3.0 起推荐 `deepseek-v4-flash-vision-exp`）。
 
 ## 许可
 
