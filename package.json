@@ -32,7 +32,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/FUSU123fusu/dsh-tui-feishu.git"
+    "url": "https://github.com/Easyhoov/dsh-tui-feishu.git"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.73.0"
