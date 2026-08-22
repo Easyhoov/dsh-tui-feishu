@@ -271,14 +271,16 @@ export function sniffImageMediaType(data: Uint8Array): string | undefined {
 }
 
 /**
- * Download an inbound image message's raw bytes by its `image_key`
- * (`GET /open-apis/im/v1/images/{image_key}`, needs the `im:resource`
- * permission). Resolves `undefined` when the bytes are not a supported
- * image; throws `FeishuApiError` on a platform business error (e.g. a
- * missing `im:resource` scope on the paired app).
+ * Download an inbound image message's raw bytes. The working endpoint is the
+ * message-resource API (`GET /im/v1/messages/{message_id}/resources/
+ * {file_key}?type=image`); `im/v1/images/{image_key}` rejects these keys with
+ * 234001. Needs the `im:resource` permission. Resolves `undefined` when the
+ * bytes are not a supported image; throws `FeishuApiError` on a platform
+ * business error.
  */
 async function downloadFeishuImage(
   client: Client,
+  messageId: string,
   imageKey: string,
   logger: TransportLogger | undefined,
 ): Promise<DownloadedImage | undefined> {
@@ -288,16 +290,16 @@ async function downloadFeishuImage(
       try {
         return await client.request<unknown>({
           method: 'GET',
-          url: `/open-apis/im/v1/images/${encodeURIComponent(imageKey)}`,
+          url: `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(imageKey)}?type=image`,
           responseType: 'arraybuffer',
           timeout: 20_000,
         })
       } catch (error: unknown) {
-        throw asFeishuError('im.v1.image.get', error)
+        throw asFeishuError('im.v1.message.resource.get', error)
       }
     })
   } catch (error: unknown) {
-    throw asFeishuError('im.v1.image.get', error)
+    throw asFeishuError('im.v1.message.resource.get', error)
   }
   // A platform error arrives as a JSON body even with arraybuffer mode.
   const bytes = response instanceof ArrayBuffer ? new Uint8Array(response) : undefined
@@ -309,7 +311,7 @@ async function downloadFeishuImage(
     try {
       const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { code?: number; msg?: string }
       const code = typeof parsed.code === 'number' ? parsed.code : -1
-      throw new FeishuApiError('im.v1.image.get', code, parsed.msg ?? 'image download rejected')
+      throw new FeishuApiError('im.v1.message.resource.get', code, parsed.msg ?? 'image download rejected')
     } catch (error: unknown) {
       if (error instanceof FeishuApiError) throw error
       // Not JSON after all - fall through to sniffing.
@@ -421,9 +423,9 @@ export class LarkTransport {
     return this.botOpenIdValue
   }
 
-  /** Download an inbound image message's bytes by its `image_key`. */
-  async downloadImage(imageKey: string): Promise<DownloadedImage | undefined> {
-    return downloadFeishuImage(this.client, imageKey, this.logger)
+  /** Download an inbound image message's bytes by its message id + image key. */
+  async downloadImage(messageId: string, imageKey: string): Promise<DownloadedImage | undefined> {
+    return downloadFeishuImage(this.client, messageId, imageKey, this.logger)
   }
 
   /** Send a plain text message to a chat. */

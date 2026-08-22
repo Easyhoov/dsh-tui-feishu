@@ -122,14 +122,19 @@ const imageEvent = (id, imageKey) => ({
 })
 
 ok('image message delivers an attachment block to the agent', async () => {
+  let resolvedArgs = undefined
   const { transport, fakeAgent, bridge, cards } = imageBridge({
-    resolveInboundImage: async () => ({
-      kind: 'attachment',
-      ref: { attachmentId: 'att-1', mediaType: 'image/png', bytes: 10, width: 4, height: 4 },
-    }),
+    resolveInboundImage: async (...args) => {
+      resolvedArgs = args
+      return {
+        kind: 'attachment',
+        ref: { attachmentId: 'att-1', mediaType: 'image/png', bytes: 10, width: 4, height: 4 },
+      }
+    },
   })
-  await transport._h(imageEvent('img1', 'img_v3_1'))
+  await transport._h(imageEvent('img-msg-1', 'img_v3_1'))
   await sleep(20)
+  assert.deepEqual(resolvedArgs, ['img-msg-1', 'img_v3_1'], 'resolver gets (messageId, imageKey)')
   const content = fakeAgent.sent.at(-1)?.content ?? []
   assert.ok(Array.isArray(content))
   const image = content.find(block => block.type === 'image')
@@ -176,7 +181,7 @@ ok('resolver failure replies with guidance', async () => {
   await transport._h(imageEvent('img4', 'img_v3_4'))
   await sleep(20)
   assert.equal(fakeAgent.sent.length, 0)
-  assert.ok(transport.sent.some(m => m.text !== undefined && m.text.includes('im:resource')), 'mentions the missing permission')
+  assert.ok(transport.sent.some(m => m.text !== undefined && m.text.includes('图片接收失败')), 'replies with a guidance message')
   bridge.dispose()
   cards.dispose()
 })
@@ -188,7 +193,7 @@ ok('resolver returning undefined also replies with guidance', async () => {
   await transport._h(imageEvent('img5', 'img_v3_5'))
   await sleep(20)
   assert.equal(fakeAgent.sent.length, 0)
-  assert.ok(transport.sent.some(m => m.text !== undefined && m.text.includes('图片下载失败')))
+  assert.ok(transport.sent.some(m => m.text !== undefined && m.text.includes('图片接收失败')))
   bridge.dispose()
   cards.dispose()
 })

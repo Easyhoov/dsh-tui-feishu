@@ -115,7 +115,7 @@ export interface BridgeOptions {
   /** Deliver inbound Feishu image messages to the agent (default true). */
   readonly receiveImages?: boolean
   /** Materialize one inbound image (download + attach/save); absent disables image delivery. */
-  readonly resolveInboundImage?: (imageKey: string) => Promise<InboundImageResult | undefined>
+  readonly resolveInboundImage?: (messageId: string, imageKey: string) => Promise<InboundImageResult | undefined>
   /** Render reasoning/thinking rows on cards (default true). */
   readonly showReasoning?: boolean
 }
@@ -356,7 +356,7 @@ export class Bridge {
     const text = message.text.trim()
     if (message.imageKey !== undefined && message.imageKey !== '') {
       this.counters.delivered += 1
-      await this.deliverImage(message.chatId, message.imageKey)
+      await this.deliverImage(message.chatId, message.messageId, message.imageKey)
       return
     }
     if (text === '') {
@@ -372,7 +372,7 @@ export class Bridge {
   }
 
   /** Materialize and deliver an inbound image message to the chat's agent. */
-  private async deliverImage(chatId: string, imageKey: string): Promise<void> {
+  private async deliverImage(chatId: string, messageId: string, imageKey: string): Promise<void> {
     const resolve = this.options.resolveInboundImage
     if (this.options.receiveImages === false || resolve === undefined) {
       this.options.logger.warn(`inbound image ignored (receiveImages=${this.options.receiveImages === false ? 'off' : 'unavailable'})`)
@@ -381,16 +381,14 @@ export class Bridge {
     }
     let result: InboundImageResult | undefined
     try {
-      result = await resolve(imageKey)
+      result = await resolve(messageId, imageKey)
     } catch (error: unknown) {
       this.options.logger.warn(`inbound image resolution failed: ${String(error)}`)
     }
     if (result === undefined) {
-      // The platform rejected the download (e.g. the paired app lacks the
-      // `im:resource` permission): say so instead of silently dropping it.
       await this.options.transport.sendText(
         chatId,
-        '📷 图片下载失败——配对应用的权限可能缺少 im:resource（重新 /feishu pair 扫码创建的应用已包含）。',
+        '📷 图片接收失败（下载出错）——请重试；若持续失败可在 TUI 里看日志。',
       )
       return
     }

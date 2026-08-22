@@ -499,8 +499,11 @@ export function apply(ctx: Context, config: Config = {}): void {
           ): Promise<readonly unknown[]>
         }
       | undefined
-    const resolveInboundImage = async (imageKey: string): Promise<InboundImageResult | undefined> => {
-      const downloaded = await transport.downloadImage(imageKey)
+    const resolveInboundImage = async (
+      messageId: string,
+      imageKey: string,
+    ): Promise<InboundImageResult | undefined> => {
+      const downloaded = await transport.downloadImage(messageId, imageKey)
       if (downloaded === undefined) return undefined
       const name = `feishu-${imageKey.slice(0, 8)}`
       if (attachments !== undefined) {

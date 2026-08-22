@@ -112,7 +112,7 @@ export interface BridgeOptions {
     /** Deliver inbound Feishu image messages to the agent (default true). */
     readonly receiveImages?: boolean;
     /** Materialize one inbound image (download + attach/save); absent disables image delivery. */
-    readonly resolveInboundImage?: (imageKey: string) => Promise<InboundImageResult | undefined>;
+    readonly resolveInboundImage?: (messageId: string, imageKey: string) => Promise<InboundImageResult | undefined>;
     /** Render reasoning/thinking rows on cards (default true). */
     readonly showReasoning?: boolean;
 }

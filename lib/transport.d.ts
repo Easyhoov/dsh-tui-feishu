@@ -126,8 +126,8 @@ export declare class LarkTransport {
     onCardAction(handler: (action: FeishuCardAction) => void): void;
     /** The bot's own open id, or `undefined` until resolved. */
     getBotOpenId(): string | undefined;
-    /** Download an inbound image message's bytes by its `image_key`. */
-    downloadImage(imageKey: string): Promise<DownloadedImage | undefined>;
+    /** Download an inbound image message's bytes by its message id + image key. */
+    downloadImage(messageId: string, imageKey: string): Promise<DownloadedImage | undefined>;
     /** Send a plain text message to a chat. */
     sendText(chatId: string, text: string): Promise<void>;
     /** Send an interactive card; resolves with the created message id. */
