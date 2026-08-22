@@ -42,8 +42,11 @@ export declare class CardKitStreamingManager implements CardStream {
     open(chatId: string, title: string): Promise<void>;
     /** Stage the next snapshot; flushed after `throttleMs` or in-flight settle. */
     patch(chatId: string, snapshot: CardSnapshot): void;
-    /** Close streaming, replace with the terminal card, retire. */
-    finalize(chatId: string, status: 'done' | 'error' | 'stopped', footer?: CardFooter, snapshot?: CardSnapshot): Promise<void>;
+    /** Close streaming, replace with the terminal card, retire. Resolves true
+     *  when the terminal card was applied (or is guaranteed to be applied by an
+     *  in-flight flush); false when the card could not be finished - the caller
+     *  should fall back to plain text so the reply is never lost. */
+    finalize(chatId: string, status: 'done' | 'error' | 'stopped', footer?: CardFooter, snapshot?: CardSnapshot): Promise<boolean>;
     isActive(chatId: string): boolean;
     activeMessageId(chatId: string): string | undefined;
     lastMessageId(chatId: string): string | undefined;
@@ -51,6 +54,9 @@ export declare class CardKitStreamingManager implements CardStream {
     refresh(chatId: string, snapshot: CardSnapshot): Promise<void>;
     dispose(): void;
     private flush;
+    /** Whether a stream failure means the platform closed the card's streaming
+     *  mode for good (idle timeout / already closed). */
+    private isStreamClosedError;
     /** Push one snapshot to the platform; false retires the card on failure. */
     private apply;
     /** Retire cards idle past the TTL. */

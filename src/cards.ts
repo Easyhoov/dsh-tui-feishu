@@ -292,12 +292,15 @@ const SWEEP_INTERVAL_MS = 60_000
 export interface CardStream {
   open(chatId: string, title: string): Promise<void>
   patch(chatId: string, snapshot: CardSnapshot): void
+  /** Resolves true when the terminal card was applied (or an in-flight flush
+   *  is guaranteed to apply it); false when the card could not be finished -
+   *  the caller should fall back to plain text so the reply is not lost. */
   finalize(
     chatId: string,
     status: 'done' | 'error' | 'stopped',
     footer?: CardFooter,
     snapshot?: CardSnapshot,
-  ): Promise<void>
+  ): Promise<boolean>
   isActive(chatId: string): boolean
   activeMessageId(chatId: string): string | undefined
   lastMessageId(chatId: string): string | undefined
@@ -394,20 +397,23 @@ export class StreamingCardManager implements CardStream {
     status: 'done' | 'error' | 'stopped',
     footer?: CardFooter,
     snapshot?: CardSnapshot,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const card = this.active.get(chatId)
-    if (card === undefined || card.closed) return
+    if (card === undefined || card.closed) return false
     card.closed = true
     if (card.timer !== null) {
       clearTimeout(card.timer)
       card.timer = null
     }
     const base = snapshot ?? card.pending ?? card.lastFlushed
-    if (base !== null) {
-      card.pending = { ...base, status, ...(footer === undefined ? {} : { footer }) }
-      await this.flush(card)
+    if (base === null) {
+      this.active.delete(chatId)
+      return false
     }
+    card.pending = { ...base, status, ...(footer === undefined ? {} : { footer }) }
+    const applied = await this.flush(card)
     this.active.delete(chatId)
+    return applied
   }
 
   /** Whether a chat currently has an active streaming card. */
@@ -498,21 +504,32 @@ export class StreamingCardManager implements CardStream {
     }
   }
 
-  private async flush(card: ActiveCard): Promise<void> {
-    if (card.flushing) return
+  /**
+   * Flush every staged snapshot to the platform. Resolves true when the last
+   * staged snapshot was applied; false when the final patch failed (the
+   * caller may fall back to plain text). An in-flight flush from `patch()`
+   * returns true immediately - it owns `pending` and applies terminal
+   * snapshots through the same loop.
+   */
+  private async flush(card: ActiveCard): Promise<boolean> {
+    if (card.flushing) return true
     card.flushing = true
     try {
+      let applied = false
       while (card.pending !== null) {
         const snapshot = card.pending
         card.pending = null
         try {
           await this.transport.updateCard(card.messageId, buildCard(snapshot, this.locale))
           card.lastFlushed = snapshot
+          applied = true
         } catch (error: unknown) {
-          if (this.handlePatchFailure(card.messageId, error)) return
+          applied = false
+          if (this.handlePatchFailure(card.messageId, error)) break
           this.logger.warn(`streaming card patch failed (continuing): ${String(error)}`)
         }
       }
+      return applied
     } finally {
       card.flushing = false
     }

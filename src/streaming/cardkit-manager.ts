@@ -38,6 +38,15 @@ interface KitCard {
   timer: ReturnType<typeof setTimeout> | null
   flushing: boolean
   closed: boolean
+  /** A terminal snapshot was staged while a patch flush was in flight; the
+   *  in-flight flush must apply it with terminal semantics (close streaming +
+   *  full update), otherwise the card is retired with streaming mode still
+   *  open and stays in "working" state on Feishu forever. */
+  terminalRequested: boolean
+  /** The platform closed this card's streaming mode (idle timeout 200850 /
+   *  "streaming mode is closed" 300309): stop per-element streaming, the
+   *  terminal full update still works. */
+  streamClosed: boolean
   openedAt: number
   lastPatchAt: number
 }
@@ -120,6 +129,8 @@ export class CardKitStreamingManager implements CardStream {
       timer: null,
       flushing: false,
       closed: false,
+      terminalRequested: false,
+      streamClosed: false,
       openedAt: now,
       lastPatchAt: now,
     })
@@ -139,27 +150,43 @@ export class CardKitStreamingManager implements CardStream {
     }
   }
 
-  /** Close streaming, replace with the terminal card, retire. */
+  /** Close streaming, replace with the terminal card, retire. Resolves true
+   *  when the terminal card was applied (or is guaranteed to be applied by an
+   *  in-flight flush); false when the card could not be finished - the caller
+   *  should fall back to plain text so the reply is never lost. */
   async finalize(
     chatId: string,
     status: 'done' | 'error' | 'stopped',
     footer?: CardFooter,
     snapshot?: CardSnapshot,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const card = this.active.get(chatId)
-    if (card === undefined || card.closed) return
+    if (card === undefined || card.closed) return false
     card.closed = true
     if (card.timer !== null) {
       clearTimeout(card.timer)
       card.timer = null
     }
     const base = snapshot ?? card.pending ?? card.lastSnapshot
-    if (base !== null) {
-      const final: CardSnapshot = { ...base, status, ...(footer === undefined ? {} : { footer }) }
-      card.pending = final
-      await this.flush(card, { terminal: true })
+    if (base === null) {
+      this.active.delete(chatId)
+      return false
     }
+    const final: CardSnapshot = { ...base, status, ...(footer === undefined ? {} : { footer }) }
+    card.pending = final
+    if (card.flushing) {
+      // A patch flush is in flight: it will pick up the terminal snapshot.
+      // Flag it so the in-flight loop applies terminal semantics (close
+      // streaming + full update) and retires the card. Without this flag the
+      // terminal snapshot is applied by the NON-terminal branch - content
+      // streams fine but streaming mode is never closed, so the card stays in
+      // "working" state on Feishu forever (the reported bug).
+      card.terminalRequested = true
+      return true
+    }
+    const ok = await this.flush(card, { terminal: true })
     this.active.delete(chatId)
+    return ok
   }
 
   isActive(chatId: string): boolean {
@@ -199,18 +226,35 @@ export class CardKitStreamingManager implements CardStream {
     this.active.clear()
   }
 
-  private async flush(card: KitCard, options: { terminal?: boolean } = {}): Promise<void> {
-    if (card.flushing) return
+  private async flush(card: KitCard, options: { terminal?: boolean } = {}): Promise<boolean> {
+    if (card.flushing) return true
     card.flushing = true
     try {
       while (card.pending !== null) {
         const snapshot = card.pending
         card.pending = null
-        if (!(await this.apply(card, snapshot, options.terminal === true))) return
+        const terminal = options.terminal === true || card.terminalRequested
+        card.terminalRequested = false
+        if (!(await this.apply(card, snapshot, terminal))) return false
+        if (terminal) {
+          // Terminal applied: retire here so an in-flight (non-terminal)
+          // flush that picked up the terminal snapshot cleans up too;
+          // finalize()'s own delete is idempotent.
+          this.active.delete(card.chatId)
+          return true
+        }
       }
+      return true
     } finally {
       card.flushing = false
     }
+  }
+
+  /** Whether a stream failure means the platform closed the card's streaming
+   *  mode for good (idle timeout / already closed). */
+  private isStreamClosedError(error: unknown): boolean {
+    const code = (error as { code?: number } | null)?.code
+    return code === 300309 || code === 200850
   }
 
   /** Push one snapshot to the platform; false retires the card on failure. */
@@ -220,7 +264,15 @@ export class CardKitStreamingManager implements CardStream {
       if (terminal) {
         // End of turn: stop the typing mode, then replace with the final card.
         card.seq += 1
-        await this.transport.cardkitCloseStreaming(card.cardId, card.seq)
+        try {
+          await this.transport.cardkitCloseStreaming(card.cardId, card.seq)
+        } catch (error: unknown) {
+          // The platform may already have closed streaming (idle timeout
+          // 200850 / "streaming mode is closed" 300309). The full update
+          // still works - tolerate the close failure and continue.
+          if (!this.isStreamClosedError(error)) throw error
+          this.logger.warn(`cardkit closeStreaming already closed (continuing): ${String(error)}`)
+        }
         const finalCard = buildCardKitCompleteCard(snapshot, this.locale, {
           showReasoning: this.showReasoning,
         })
@@ -259,26 +311,35 @@ export class CardKitStreamingManager implements CardStream {
       // Text streaming is best-effort: a failed stream_element (e.g. a
       // transient error) must NOT retire the card - the terminal card's full
       // update carries the complete content anyway (hermes logs and moves on).
+      // Once the platform closes streaming (idle timeout / already closed),
+      // every stream call fails: remember it and stop trying - the content
+      // still lands in the terminal full update.
       if (this.showReasoning && thinkRows.length > 0 && rowsKey(thinkRows) !== rowsKey(prevThinkRows)) {
-        const text = thinkRows.map(row => row.text).join('\n').slice(0, 600) || ' '
-        card.seq += 1
-        try {
-          await this.transport.cardkitStreamElement(card.cardId, KIT_REASONING_TEXT_ELEMENT, text, card.seq)
-        } catch (error: unknown) {
-          this.logger.warn(`thinking stream failed (continuing): ${String(error)}`)
+        if (!card.streamClosed) {
+          const text = thinkRows.map(row => row.text).join('\n').slice(0, 600) || ' '
+          card.seq += 1
+          try {
+            await this.transport.cardkitStreamElement(card.cardId, KIT_REASONING_TEXT_ELEMENT, text, card.seq)
+          } catch (error: unknown) {
+            if (this.isStreamClosedError(error)) card.streamClosed = true
+            this.logger.warn(`thinking stream failed (continuing): ${String(error)}`)
+          }
         }
       }
       if (previous === null || snapshot.content !== previous.content) {
-        card.seq += 1
-        try {
-          await this.transport.cardkitStreamElement(
-            card.cardId,
-            KIT_ANSWER_ELEMENT,
-            snapshot.content || ' ',
-            card.seq,
-          )
-        } catch (error: unknown) {
-          this.logger.warn(`answer stream failed (continuing): ${String(error)}`)
+        if (!card.streamClosed) {
+          card.seq += 1
+          try {
+            await this.transport.cardkitStreamElement(
+              card.cardId,
+              KIT_ANSWER_ELEMENT,
+              snapshot.content || ' ',
+              card.seq,
+            )
+          } catch (error: unknown) {
+            if (this.isStreamClosedError(error)) card.streamClosed = true
+            this.logger.warn(`answer stream failed (continuing): ${String(error)}`)
+          }
         }
       }
       card.lastSnapshot = snapshot

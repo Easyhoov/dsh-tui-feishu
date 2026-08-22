@@ -71,7 +71,10 @@ export declare function buildCard(snapshot: CardSnapshot, locale?: CardLocale): 
 export interface CardStream {
     open(chatId: string, title: string): Promise<void>;
     patch(chatId: string, snapshot: CardSnapshot): void;
-    finalize(chatId: string, status: 'done' | 'error' | 'stopped', footer?: CardFooter, snapshot?: CardSnapshot): Promise<void>;
+    /** Resolves true when the terminal card was applied (or an in-flight flush
+     *  is guaranteed to apply it); false when the card could not be finished -
+     *  the caller should fall back to plain text so the reply is not lost. */
+    finalize(chatId: string, status: 'done' | 'error' | 'stopped', footer?: CardFooter, snapshot?: CardSnapshot): Promise<boolean>;
     isActive(chatId: string): boolean;
     activeMessageId(chatId: string): string | undefined;
     lastMessageId(chatId: string): string | undefined;
@@ -119,7 +122,7 @@ export declare class StreamingCardManager implements CardStream {
      * holds a newer version of the content than the last flush (e.g. image
      * resolution at turn end).
      */
-    finalize(chatId: string, status: 'done' | 'error' | 'stopped', footer?: CardFooter, snapshot?: CardSnapshot): Promise<void>;
+    finalize(chatId: string, status: 'done' | 'error' | 'stopped', footer?: CardFooter, snapshot?: CardSnapshot): Promise<boolean>;
     /** Whether a chat currently has an active streaming card. */
     isActive(chatId: string): boolean;
     /** Message id of the active card, for button routing. */
@@ -142,5 +145,12 @@ export declare class StreamingCardManager implements CardStream {
     private handlePatchFailure;
     /** Retire cards that have seen no patch activity for `cardTtlMs`. */
     private sweepStale;
+    /**
+     * Flush every staged snapshot to the platform. Resolves true when the last
+     * staged snapshot was applied; false when the final patch failed (the
+     * caller may fall back to plain text). An in-flight flush from `patch()`
+     * returns true immediately - it owns `pending` and applies terminal
+     * snapshots through the same loop.
+     */
     private flush;
 }

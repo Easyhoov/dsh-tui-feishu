@@ -1023,7 +1023,28 @@ export class Bridge {
         }
         this.lastSnapshots.set(chatId, finalSnapshot)
         if (this.options.cards.isActive(chatId)) {
-          await this.options.cards.finalize(chatId, status, footer, finalSnapshot)
+          let finalized = false
+          try {
+            finalized = await this.options.cards.finalize(chatId, status, footer, finalSnapshot)
+          } catch (error: unknown) {
+            this.options.logger.warn(`card finalize threw; falling back to plain text: ${String(error)}`)
+          }
+          if (!finalized) {
+            // The streaming card could not be finished (dead card / retired):
+            // don't lose the reply - fall back to plain text.
+            this.options.logger.warn(`card finalize failed; falling back to plain text`)
+            const fallback =
+              status === 'error'
+                ? `⚠️ ${reason?.error?.message ?? 'turn ended with an error'}`
+                : state.content
+            if (fallback !== '') {
+              await this.options.transport
+                .sendText(chatId, fallback.length > 3000 ? `…${fallback.slice(-3000)}` : fallback)
+                .catch((error: unknown) => {
+                  this.options.logger.warn(`plain-text fallback failed: ${String(error)}`)
+                })
+            }
+          }
         } else {
           // The streaming card never opened (e.g. a rejected card payload):
           // don't lose the reply - fall back to plain text.

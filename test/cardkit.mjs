@@ -291,4 +291,60 @@ ok('showReasoning=false drops reasoning rows', async () => {
   cards.dispose()
 })
 
+// ── regression: finalize while a patch flush is in flight ───────────────
+// The reported bug: turn/end lands while the 100ms patch flush is streaming
+// the last chunk; finalize's flush was dropped by the `flushing` guard, the
+// terminal snapshot was applied by the NON-terminal branch, streaming mode
+// was never closed, and the card stayed in "working" state forever.
+ok('finalize during an in-flight flush still closes streaming and pushes the terminal card', async () => {
+  const transport = fakeCardKitTransport()
+  // Block the first stream_element so the patch flush is provably in flight
+  // when finalize runs.
+  let releaseStream
+  const streamGate = new Promise(resolve => {
+    releaseStream = resolve
+  })
+  let blocked = false
+  const originalStream = transport.cardkitStreamElement
+  transport.cardkitStreamElement = async (...args) => {
+    if (args[1] === 'streaming_content' && !blocked) {
+      blocked = true
+      await streamGate
+    }
+    return originalStream(...args)
+  }
+  const manager = new CardKitStreamingManager(transport, { throttleMs: 1, logger: { warn() {} } })
+  await manager.open('chat', 'hello')
+
+  manager.patch('chat', {
+    title: 'hello',
+    content: 'work',
+    rows: [],
+    status: 'working',
+  })
+  // Let the throttle timer fire and the flush enter the blocked stream.
+  await sleep(30)
+  assert.ok(blocked, 'patch flush is in flight inside stream_element')
+
+  const finalized = await manager.finalize('chat', 'done', { elapsedMs: 1000 }, {
+    title: 'hello',
+    content: 'work',
+    rows: [],
+    status: 'done',
+  })
+  assert.equal(finalized, true)
+  // The in-flight flush is still blocked - the terminal apply must wait for it.
+  assert.ok(manager.isActive('chat'), 'card not retired before the terminal apply')
+
+  releaseStream()
+  await sleep(50)
+
+  assert.ok(transport.calls.some(call => call[0] === 'cardkitCloseStreaming'), 'streaming closed despite in-flight flush')
+  const done = transport.calls.filter(call => call[0] === 'cardkitUpdate')
+  assert.equal(done.length, 1, 'terminal card pushed exactly once')
+  assert.equal(done[0][2].schema, '2.0')
+  assert.ok(!manager.isActive('chat'), 'card retired after the terminal apply')
+  manager.dispose()
+})
+
 console.log(`CARDKIT OK (${passed} checks)`)
