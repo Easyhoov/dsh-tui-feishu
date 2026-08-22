@@ -44,6 +44,8 @@ export interface Config {
     readonly locale?: 'zh' | 'en';
     /** Resolve remote images in answers to Feishu image keys (default true). */
     readonly resolveImages?: boolean;
+    /** Accept inbound image messages and deliver them to the agent (default true). */
+    readonly receiveImages?: boolean;
     /** Card engine: `v1` (message.patch, default) or `cardkit` (CardKit 2.0 typing). */
     readonly cardEngine?: 'v1' | 'cardkit';
     /** Show reasoning/thinking rows on cards (default true). */

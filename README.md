@@ -53,7 +53,7 @@ dsh plugin --profile dsh-tui add file:dsh-tui-feishu-0.2.0.tgz
 1. 环境变量：`FEISHU_APP_ID` / `FEISHU_APP_SECRET`
 2. 配置键：profile 的 cordis.patch.yml 中给本插件的 config 加 `appId` / `appSecret`
 
-手动配置时需要应用已具备：`im:message`、`im:message:send_as_bot`、`im:chat` 权限，事件订阅 `im.message.receive_v1`（长连接模式），卡片回调 `card.action.trigger`。
+手动配置时需要应用已具备：`im:message`、`im:message:send_as_bot`、`im:chat`、`im:resource`（接收图片消息需要）权限，事件订阅 `im.message.receive_v1`（长连接模式），卡片回调 `card.action.trigger`。
 
 ## 用法
 
@@ -117,6 +117,7 @@ TUI 里：
 | `cardTtlMs` | 无更新自动退休流式卡片的时长（ms） | 900000（15 分钟） |
 | `locale` | 卡片文案语言 `zh` / `en` | `zh` |
 | `resolveImages` | 回合结束时把答案里的远程图片上传为飞书 img_key | `true` |
+| `receiveImages` | 接收飞书发来的图片：下载后经宿主附件服务以 ImageBlock 投递给 agent（无附件服务时降级为存文件并附路径） | `true` |
 | `cardEngine` | 卡片引擎：`v1`（message.patch，默认）或 `cardkit`（CardKit 2.0 打字机流式，需应用支持卡片 2.0） | `v1` |
 | `showReasoning` | 是否在卡片上展示思考过程行 | `true` |
 | `allowedUsers` | 允许的 sender open_id 白名单 | 扫码创建者 |

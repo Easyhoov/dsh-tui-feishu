@@ -34,6 +34,23 @@ export interface SessionPrefs {
     };
     readonly effort?: string;
 }
+/** Structural subset of the host's `ImageAttachmentRef` (kept local for loose coupling). */
+export interface ImageAttachmentRefLike {
+    readonly attachmentId: string;
+    readonly mediaType: string;
+    readonly bytes: number;
+    readonly width: number;
+    readonly height: number;
+    readonly name?: string;
+}
+/** How an inbound Feishu image was materialized for the agent. */
+export type InboundImageResult = {
+    readonly kind: 'attachment';
+    readonly ref: ImageAttachmentRefLike;
+} | {
+    readonly kind: 'file';
+    readonly path: string;
+};
 /** Adapts the dsh agent registry to the bridge's needs (injectable for tests). */
 export interface AgentStore {
     /** The live agent for a session, or `undefined`. */
@@ -92,6 +109,10 @@ export interface BridgeOptions {
     readonly reminders?: ReminderStore;
     /** Resolve remote answer images to Feishu keys at turn end (default true). */
     readonly resolveImages?: boolean;
+    /** Deliver inbound Feishu image messages to the agent (default true). */
+    readonly receiveImages?: boolean;
+    /** Materialize one inbound image (download + attach/save); absent disables image delivery. */
+    readonly resolveInboundImage?: (imageKey: string) => Promise<InboundImageResult | undefined>;
     /** Render reasoning/thinking rows on cards (default true). */
     readonly showReasoning?: boolean;
 }
@@ -128,6 +149,8 @@ export declare class Bridge {
     private senderAllowed;
     private dedupe;
     private handleIncoming;
+    /** Materialize and deliver an inbound image message to the chat's agent. */
+    private deliverImage;
     private handleCommand;
     /** Best-effort persist of the session map (never breaks a command). */
     private persistMap;
@@ -158,7 +181,8 @@ export declare class Bridge {
     private handleModelCommand;
     /** `/effort` — show the pinned reasoning effort, or set/clear it. */
     private handleEffortCommand;
-    /** Resolve (or create) the chat's agent, then deliver one user turn. */
+    /** Resolve (or create) the chat's agent, then deliver one user turn.
+     *  `blocks` overrides the default text-only content (e.g. an image block). */
     private deliver;
     /** Live agent for the chat's bound session, resuming or creating as needed. */
     private ensureAgent;

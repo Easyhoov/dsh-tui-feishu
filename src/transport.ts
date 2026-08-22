@@ -37,7 +37,10 @@ export interface FeishuMessage {
   readonly chatId: string
   readonly chatType: 'p2p' | 'group'
   readonly senderOpenId: string
+  /** Visible text for `text` messages ('' for image-only messages). */
   readonly text: string
+  /** `image` messages carry the platform image key (download via `downloadImage`). */
+  readonly imageKey?: string
   /** Open ids of users @-mentioned in the message (bot excluded by caller). */
   readonly mentions: readonly string[]
 }
@@ -134,7 +137,7 @@ export function asFeishuError(operation: string, error: unknown): Error {
 /** Strip `<at …>name</at>` mention placeholders from Feishu text content. */
 const MENTION_PATTERN = /<at[^>]*>.*?<\/at>/g
 /** Message types the bridge understands; everything else is ignored. */
-const SUPPORTED_MESSAGE_TYPE = 'text'
+const SUPPORTED_MESSAGE_TYPES = new Set(['text', 'image'])
 
 /**
  * Normalize a raw `im.message.receive_v1` payload into a bridge message, or
@@ -142,11 +145,14 @@ const SUPPORTED_MESSAGE_TYPE = 'text'
  */
 export function normalizeMessageEvent(data: RawMessageEvent): FeishuMessage | undefined {
   const message = data.message
-  if (message === undefined || message.message_type !== SUPPORTED_MESSAGE_TYPE) return undefined
+  if (message === undefined || !SUPPORTED_MESSAGE_TYPES.has(message.message_type)) return undefined
   const senderOpenId = data.sender?.sender_id?.open_id ?? ''
   let text = ''
+  let imageKey: string | undefined
   try {
-    text = (JSON.parse(message.content) as { text?: string }).text ?? ''
+    const content = JSON.parse(message.content) as { text?: string; image_key?: string }
+    text = content.text ?? ''
+    imageKey = content.image_key
   } catch {
     return undefined
   }
@@ -157,6 +163,7 @@ export function normalizeMessageEvent(data: RawMessageEvent): FeishuMessage | un
     chatType: message.chat_type === 'group' ? 'group' : 'p2p',
     senderOpenId,
     text,
+    ...(imageKey === undefined || imageKey === '' ? {} : { imageKey }),
     mentions: (message.mentions ?? [])
       .map(mention => mention.id?.open_id)
       .filter((id): id is string => id !== undefined && id !== ''),
@@ -220,7 +227,8 @@ export async function pairByQrCode(options: {
     appPreset: { name: 'dsh-TUI Agent', desc: 'Your dsh-TUI agent, remote-controlled from Feishu' },
     addons: {
       preset: true,
-      scopes: { tenant: ['im:message', 'im:message:send_as_bot', 'im:chat'] },
+      // `im:resource` covers inbound image downloads (im/v1/images/{key}).
+      scopes: { tenant: ['im:message', 'im:message:send_as_bot', 'im:chat', 'im:resource'] },
       events: { items: { tenant: ['im.message.receive_v1'] } },
       callbacks: { items: ['card.action.trigger'] },
     },
@@ -232,6 +240,78 @@ export async function pairByQrCode(options: {
       ? { ownerOpenId: result.user_info.open_id }
       : {}),
   }
+}
+
+/** One downloaded inbound image: raw bytes plus the sniffed media type. */
+export interface DownloadedImage {
+  readonly data: Uint8Array
+  readonly mediaType: string
+}
+
+/** Sniff the media type of raw image bytes (JPEG/PNG/GIF/WebP). */
+export function sniffImageMediaType(data: Uint8Array): string | undefined {
+  if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return 'image/jpeg'
+  if (data.length >= 8 && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return 'image/png'
+  if (data.length >= 6 && data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x38) return 'image/gif'
+  if (
+    data.length >= 12 &&
+    data[0] === 0x52 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x46 &&
+    data[8] === 0x57 && data[9] === 0x45 && data[10] === 0x42 && data[11] === 0x50
+  ) return 'image/webp'
+  return undefined
+}
+
+/**
+ * Download an inbound image message's raw bytes by its `image_key`
+ * (`GET /open-apis/im/v1/images/{image_key}`, needs the `im:resource`
+ * permission). Resolves `undefined` when the bytes are not a supported
+ * image; throws `FeishuApiError` on a platform business error (e.g. a
+ * missing `im:resource` scope on the paired app).
+ */
+async function downloadFeishuImage(
+  client: Client,
+  imageKey: string,
+  logger: TransportLogger | undefined,
+): Promise<DownloadedImage | undefined> {
+  let response
+  try {
+    response = await withTransientRetry(async () => {
+      try {
+        return await client.request<unknown>({
+          method: 'GET',
+          url: `/open-apis/im/v1/images/${encodeURIComponent(imageKey)}`,
+          responseType: 'arraybuffer',
+          timeout: 20_000,
+        })
+      } catch (error: unknown) {
+        throw asFeishuError('im.v1.image.get', error)
+      }
+    })
+  } catch (error: unknown) {
+    throw asFeishuError('im.v1.image.get', error)
+  }
+  // A platform error arrives as a JSON body even with arraybuffer mode.
+  const bytes = response instanceof ArrayBuffer ? new Uint8Array(response) : undefined
+  if (bytes === undefined || bytes.length === 0) {
+    logger?.warn(`image download returned no bytes for key ${imageKey.slice(0, 12)}…`)
+    return undefined
+  }
+  if (bytes[0] === 0x7b /* '{' */) {
+    try {
+      const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { code?: number; msg?: string }
+      const code = typeof parsed.code === 'number' ? parsed.code : -1
+      throw new FeishuApiError('im.v1.image.get', code, parsed.msg ?? 'image download rejected')
+    } catch (error: unknown) {
+      if (error instanceof FeishuApiError) throw error
+      // Not JSON after all - fall through to sniffing.
+    }
+  }
+  const mediaType = sniffImageMediaType(bytes)
+  if (mediaType === undefined) {
+    logger?.warn(`image download for key ${imageKey.slice(0, 12)}… is not a supported image type`)
+    return undefined
+  }
+  return { data: bytes, mediaType }
 }
 
 /**
@@ -330,6 +410,11 @@ export class LarkTransport {
   /** The bot's own open id, or `undefined` until resolved. */
   getBotOpenId(): string | undefined {
     return this.botOpenIdValue
+  }
+
+  /** Download an inbound image message's bytes by its `image_key`. */
+  async downloadImage(imageKey: string): Promise<DownloadedImage | undefined> {
+    return downloadFeishuImage(this.client, imageKey, this.logger)
   }
 
   /** Send a plain text message to a chat. */

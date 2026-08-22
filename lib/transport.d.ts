@@ -27,7 +27,10 @@ export interface FeishuMessage {
     readonly chatId: string;
     readonly chatType: 'p2p' | 'group';
     readonly senderOpenId: string;
+    /** Visible text for `text` messages ('' for image-only messages). */
     readonly text: string;
+    /** `image` messages carry the platform image key (download via `downloadImage`). */
+    readonly imageKey?: string;
     /** Open ids of users @-mentioned in the message (bot excluded by caller). */
     readonly mentions: readonly string[];
 }
@@ -89,6 +92,13 @@ export declare function pairByQrCode(options: {
     onStatusChange?: (status: 'polling' | 'slow_down' | 'domain_switched') => void;
     signal?: AbortSignal;
 }): Promise<PairingResult>;
+/** One downloaded inbound image: raw bytes plus the sniffed media type. */
+export interface DownloadedImage {
+    readonly data: Uint8Array;
+    readonly mediaType: string;
+}
+/** Sniff the media type of raw image bytes (JPEG/PNG/GIF/WebP). */
+export declare function sniffImageMediaType(data: Uint8Array): string | undefined;
 /**
  * The Feishu transport: long-connection receive + API send/update.
  */
@@ -114,6 +124,8 @@ export declare class LarkTransport {
     onCardAction(handler: (action: FeishuCardAction) => void): void;
     /** The bot's own open id, or `undefined` until resolved. */
     getBotOpenId(): string | undefined;
+    /** Download an inbound image message's bytes by its `image_key`. */
+    downloadImage(imageKey: string): Promise<DownloadedImage | undefined>;
     /** Send a plain text message to a chat. */
     sendText(chatId: string, text: string): Promise<void>;
     /** Send an interactive card; resolves with the created message id. */

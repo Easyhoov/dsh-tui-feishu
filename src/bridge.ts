@@ -39,6 +39,21 @@ export interface SessionPrefs {
   readonly effort?: string
 }
 
+/** Structural subset of the host's `ImageAttachmentRef` (kept local for loose coupling). */
+export interface ImageAttachmentRefLike {
+  readonly attachmentId: string
+  readonly mediaType: string
+  readonly bytes: number
+  readonly width: number
+  readonly height: number
+  readonly name?: string
+}
+
+/** How an inbound Feishu image was materialized for the agent. */
+export type InboundImageResult =
+  | { readonly kind: 'attachment'; readonly ref: ImageAttachmentRefLike }
+  | { readonly kind: 'file'; readonly path: string }
+
 /** Adapts the dsh agent registry to the bridge's needs (injectable for tests). */
 export interface AgentStore {
   /** The live agent for a session, or `undefined`. */
@@ -97,6 +112,10 @@ export interface BridgeOptions {
   readonly reminders?: ReminderStore
   /** Resolve remote answer images to Feishu keys at turn end (default true). */
   readonly resolveImages?: boolean
+  /** Deliver inbound Feishu image messages to the agent (default true). */
+  readonly receiveImages?: boolean
+  /** Materialize one inbound image (download + attach/save); absent disables image delivery. */
+  readonly resolveInboundImage?: (imageKey: string) => Promise<InboundImageResult | undefined>
   /** Render reasoning/thinking rows on cards (default true). */
   readonly showReasoning?: boolean
 }
@@ -335,6 +354,11 @@ export class Bridge {
       return
     }
     const text = message.text.trim()
+    if (message.imageKey !== undefined && message.imageKey !== '') {
+      this.counters.delivered += 1
+      await this.deliverImage(message.chatId, message.imageKey)
+      return
+    }
     if (text === '') {
       this.counters.dropped += 1
       return
@@ -345,6 +369,39 @@ export class Bridge {
       return
     }
     await this.deliver(message.chatId, text)
+  }
+
+  /** Materialize and deliver an inbound image message to the chat's agent. */
+  private async deliverImage(chatId: string, imageKey: string): Promise<void> {
+    const resolve = this.options.resolveInboundImage
+    if (this.options.receiveImages === false || resolve === undefined) {
+      this.options.logger.warn(`inbound image ignored (receiveImages=${this.options.receiveImages === false ? 'off' : 'unavailable'})`)
+      await this.options.transport.sendText(chatId, '📷 当前未开启图片接收（或宿主不支持）。')
+      return
+    }
+    let result: InboundImageResult | undefined
+    try {
+      result = await resolve(imageKey)
+    } catch (error: unknown) {
+      this.options.logger.warn(`inbound image resolution failed: ${String(error)}`)
+    }
+    if (result === undefined) {
+      // The platform rejected the download (e.g. the paired app lacks the
+      // `im:resource` permission): say so instead of silently dropping it.
+      await this.options.transport.sendText(
+        chatId,
+        '📷 图片下载失败——配对应用的权限可能缺少 im:resource（重新 /feishu pair 扫码创建的应用已包含）。',
+      )
+      return
+    }
+    const blocks: { type: string; [key: string]: unknown }[] =
+      result.kind === 'attachment'
+        ? [
+            { type: 'image', attachment: result.ref },
+            { type: 'text', text: '📷 用户发来一张图片。' },
+          ]
+        : [{ type: 'text', text: `📷 用户发来一张图片，已保存到 ${result.path}（如需查看可用 read_image 读取）。` }]
+    await this.deliver(chatId, '📷 图片', blocks)
   }
 
   private async handleCommand(chatId: string, line: string): Promise<void> {
@@ -731,13 +788,19 @@ export class Bridge {
     )
   }
 
-  /** Resolve (or create) the chat's agent, then deliver one user turn. */
-  private async deliver(chatId: string, text: string): Promise<void> {
+  /** Resolve (or create) the chat's agent, then deliver one user turn.
+   *  `blocks` overrides the default text-only content (e.g. an image block). */
+  private async deliver(
+    chatId: string,
+    text: string,
+    blocks?: readonly Record<string, unknown>[],
+  ): Promise<void> {
     const agent = await this.ensureAgent(chatId)
     if (agent === undefined) {
       await this.options.transport.sendText(chatId, '⚠️ 宿主上没有 agent 服务——dsh 是否在运行？')
       return
     }
+    const content = blocks ?? [{ type: 'text', text }]
     const title = text.length > TITLE_CHARS ? `${text.slice(0, TITLE_CHARS)}…` : text
     // A turn is already running: the agent inbox queues the message for the
     // next turn, so queue the title too instead of clobbering the live card.
@@ -747,7 +810,7 @@ export class Bridge {
       this.queuedTurns.set(chatId, queue)
       try {
         agent.followup(
-          createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
+          createUserMessage({ content: content as never, source: { kind: 'user' } }),
         )
       } catch (error: unknown) {
         queue.pop()
@@ -779,7 +842,7 @@ export class Bridge {
     try {
       agent.followup(
         createUserMessage({
-          content: [{ type: 'text', text }],
+          content: content as never,
           source: { kind: 'user' },
         }),
       )

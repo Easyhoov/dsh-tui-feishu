@@ -21,10 +21,12 @@
 
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection, type AgentSetup, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 // Type-only: carries the `ctx.commands` and `approval/request` Context
 // merges into this compilation.
 import type {} from '@deepseek-ai/dsh-commands'
@@ -33,7 +35,7 @@ import type {} from '@deepseek-ai/dsh-user-approval'
 import type { CommandInvocation } from '@deepseek-ai/dsh-commands'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
-import { Bridge, type AgentStore, type ModelControl, type SessionPrefs } from './bridge.js'
+import { Bridge, type AgentStore, type InboundImageResult, type ModelControl, type SessionPrefs } from './bridge.js'
 import { StreamingCardManager, type CardStream } from './cards.js'
 import { CardKitStreamingManager } from './streaming/cardkit-manager.js'
 import { ReminderStore } from './reminders.js'
@@ -72,6 +74,8 @@ export interface Config {
   readonly locale?: 'zh' | 'en'
   /** Resolve remote images in answers to Feishu image keys (default true). */
   readonly resolveImages?: boolean
+  /** Accept inbound image messages and deliver them to the agent (default true). */
+  readonly receiveImages?: boolean
   /** Card engine: `v1` (message.patch, default) or `cardkit` (CardKit 2.0 typing). */
   readonly cardEngine?: 'v1' | 'cardkit'
   /** Show reasoning/thinking rows on cards (default true). */
@@ -91,6 +95,7 @@ export const Config: z<Config> = z.object({
   cardTtlMs: z.natural().min(1000).required(false),
   locale: z.union([z.const('zh'), z.const('en')]).required(false),
   resolveImages: z.boolean().required(false),
+  receiveImages: z.boolean().required(false),
   cardEngine: z.union([z.const('v1'), z.const('cardkit')]).required(false),
   showReasoning: z.boolean().required(false),
   allowedUsers: z.array(z.string()).required(false),
@@ -483,6 +488,41 @@ export function apply(ctx: Context, config: Config = {}): void {
       },
     }
 
+    // Inbound image delivery: prefer the host attachment service (durable
+    // ImageAttachmentRef usable in user-message image blocks), fall back to
+    // saving the raw bytes under the plugin data dir and handing the agent a
+    // file path.
+    const attachments = ctx.get('attachments') as
+      | {
+          saveImages(
+            inputs: readonly { data: Uint8Array; mediaType: string; name?: string }[],
+          ): Promise<readonly unknown[]>
+        }
+      | undefined
+    const resolveInboundImage = async (imageKey: string): Promise<InboundImageResult | undefined> => {
+      const downloaded = await transport.downloadImage(imageKey)
+      if (downloaded === undefined) return undefined
+      const name = `feishu-${imageKey.slice(0, 8)}`
+      if (attachments !== undefined) {
+        try {
+          const [ref] = await attachments.saveImages([
+            { data: downloaded.data, mediaType: downloaded.mediaType, name },
+          ])
+          return { kind: 'attachment', ref: ref as ImageAttachmentRef }
+        } catch (error: unknown) {
+          // Attachment service refused (limits/type policy): degrade to the
+          // file fallback instead of losing the image.
+          logger.warn(`attachment save failed (falling back to file): ${String(error)}`)
+        }
+      }
+      const dir = join(dataDir, 'images')
+      mkdirSync(dir, { recursive: true })
+      const ext = downloaded.mediaType.split('/')[1] ?? 'img'
+      const file = join(dir, `${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`)
+      writeFileSync(file, Buffer.from(downloaded.data))
+      return { kind: 'file', path: file }
+    }
+
     const bridge = new Bridge({
       transport,
       sessionMap,
@@ -493,8 +533,10 @@ export function apply(ctx: Context, config: Config = {}): void {
       modelControl,
       reminders,
       ...(config.resolveImages === undefined ? {} : { resolveImages: config.resolveImages }),
+      ...(config.receiveImages === undefined ? {} : { receiveImages: config.receiveImages }),
       ...(config.showReasoning === undefined ? {} : { showReasoning: config.showReasoning }),
       ...(allowed.length === 0 ? {} : { allowedUsers: allowed }),
+      resolveInboundImage,
     })
     bridgeRef = bridge
     bridge.start()
