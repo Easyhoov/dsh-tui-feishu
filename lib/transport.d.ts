@@ -61,7 +61,9 @@ export declare class FeishuApiError extends Error {
 /**
  * Fold an HTTP-layer SDK error (axios) into a FeishuApiError carrying the
  * platform's business code/message, so logs show the real rejection reason
- * instead of a bare 'Request failed with status code 400'.
+ * instead of a bare 'Request failed with status code 400'. Binary response
+ * modes (arraybuffer/blob) return the error body as an ArrayBuffer - decode
+ * it before parsing so the business code survives.
  */
 export declare function asFeishuError(operation: string, error: unknown): Error;
 /**

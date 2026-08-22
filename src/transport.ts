@@ -119,10 +119,19 @@ async function withTransientRetry<T>(call: () => Promise<T>): Promise<T> {
 /**
  * Fold an HTTP-layer SDK error (axios) into a FeishuApiError carrying the
  * platform's business code/message, so logs show the real rejection reason
- * instead of a bare 'Request failed with status code 400'.
+ * instead of a bare 'Request failed with status code 400'. Binary response
+ * modes (arraybuffer/blob) return the error body as an ArrayBuffer - decode
+ * it before parsing so the business code survives.
  */
 export function asFeishuError(operation: string, error: unknown): Error {
-  const data = (error as { response?: { data?: unknown } } | null)?.response?.data
+  let data = (error as { response?: { data?: unknown } } | null)?.response?.data
+  if (data instanceof ArrayBuffer) {
+    try {
+      data = JSON.parse(new TextDecoder().decode(data)) as unknown
+    } catch {
+      // Not JSON; keep the raw buffer (falls through to the message below).
+    }
+  }
   if (data !== null && typeof data === 'object') {
     const { code, msg } = data as { code?: unknown; msg?: unknown }
     return new FeishuApiError(
