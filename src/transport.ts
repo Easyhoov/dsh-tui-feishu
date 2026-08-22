@@ -125,7 +125,7 @@ async function withTransientRetry<T>(call: () => Promise<T>): Promise<T> {
  */
 export function asFeishuError(operation: string, error: unknown): Error {
   let data = (error as { response?: { data?: unknown } } | null)?.response?.data
-  if (data instanceof ArrayBuffer) {
+  if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
     try {
       data = JSON.parse(new TextDecoder().decode(data)) as unknown
     } catch {
@@ -301,9 +301,17 @@ async function downloadFeishuImage(
   } catch (error: unknown) {
     throw asFeishuError('im.v1.message.resource.get', error)
   }
-  // A platform error arrives as a JSON body even with arraybuffer mode.
-  const bytes = response instanceof ArrayBuffer ? new Uint8Array(response) : undefined
-  if (bytes === undefined || bytes.length === 0) {
+  // The Node http layer returns a Buffer (a Uint8Array subclass), not an
+  // ArrayBuffer - accept both shapes before sniffing. A platform error
+  // arrives as a JSON body even in binary response mode (bytes[0] === '{').
+  const raw =
+    response instanceof ArrayBuffer
+      ? new Uint8Array(response)
+      : response instanceof Uint8Array
+        ? (response as Uint8Array)
+        : undefined
+  const bytes = raw !== undefined && raw.length > 0 ? raw : undefined
+  if (bytes === undefined) {
     logger?.warn(`image download returned no bytes for key ${imageKey.slice(0, 12)}…`)
     return undefined
   }

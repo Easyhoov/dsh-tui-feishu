@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { Bridge } from '../lib/bridge.js'
 import { SessionMap } from '../lib/session-map.js'
 import { StreamingCardManager } from '../lib/cards.js'
-import { normalizeMessageEvent, sniffImageMediaType } from '../lib/transport.js'
+import { normalizeMessageEvent, sniffImageMediaType, asFeishuError } from '../lib/transport.js'
 
 let passed = 0
 const ok = (name, fn) => {
@@ -196,6 +196,15 @@ ok('resolver returning undefined also replies with guidance', async () => {
   assert.ok(transport.sent.some(m => m.text !== undefined && m.text.includes('图片接收失败')))
   bridge.dispose()
   cards.dispose()
+})
+
+
+ok('asFeishuError decodes binary (Buffer/ArrayBuffer) error bodies', () => {
+  const body = new TextEncoder().encode(JSON.stringify({ code: 234001, msg: 'Invalid request param.' }))
+  const err = { response: { data: body } }
+  const folded = asFeishuError('im.v1.message.resource.get', err)
+  assert.equal(folded.code, 234001, 'business code survives binary folding')
+  assert.ok(folded.message.includes('Invalid request param.'))
 })
 
 console.log(`IMAGES OK (${passed} checks)`)
