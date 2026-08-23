@@ -35,12 +35,13 @@ ok('normalizes file messages with the file key', () => {
   assert.equal(msg.text, '')
 })
 
-ok('file sniffing covers pdf/zip/gz/text/bin', () => {
+ok('file sniffing covers pdf/zip/ole/gz/text/bin', () => {
   assert.equal(sniffFileType(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31])), 'pdf')
   assert.equal(sniffFileType(new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0, 0])), 'zip')
   assert.equal(sniffFileType(new Uint8Array([0x1f, 0x8b, 0x08, 0, 0])), 'gz')
   const text = new TextEncoder().encode('hello world\nthis is a text file\n')
   assert.equal(sniffFileType(text), 'txt')
+  assert.equal(sniffFileType(new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0x00])), 'ole')
   assert.equal(sniffFileType(new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0])), 'bin')
 })
 

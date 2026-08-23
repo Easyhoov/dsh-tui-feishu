@@ -279,6 +279,8 @@ export function sniffImageMediaType(data: Uint8Array): string | undefined {
 export function sniffFileType(data: Uint8Array): string {
   if (data.length >= 5 && data[0] === 0x25 && data[1] === 0x50 && data[2] === 0x44 && data[3] === 0x46 && data[4] === 0x2d) return 'pdf'
   if (data.length >= 4 && data[0] === 0x50 && data[1] === 0x4b && data[2] === 0x03 && data[3] === 0x04) return 'zip'
+  // OLE2 compound document: legacy Word (.doc) or Excel (.xls).
+  if (data.length >= 8 && data[0] === 0xd0 && data[1] === 0xcf && data[2] === 0x11 && data[3] === 0xe0 && data[4] === 0xa1 && data[5] === 0xb1 && data[6] === 0x1a && data[7] === 0xe1) return 'ole'
   if (data.length >= 2 && data[0] === 0x1f && data[1] === 0x8b) return 'gz'
   if (data.length >= 4 && data[0] === 0x7f && data[1] === 0x45 && data[2] === 0x4c && data[3] === 0x46) return 'bin'
   if (data.length >= 8 && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return 'png'
