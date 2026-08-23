@@ -120,6 +120,7 @@ TUI 里：
 | `locale` | 卡片文案语言 `zh` / `en` | `zh` |
 | `resolveImages` | 回合结束时把答案里的远程图片上传为飞书 img_key | `true` |
 | `receiveImages` | 接收飞书发来的图片：下载后经宿主附件服务以 ImageBlock 投递给 agent（无附件服务时降级为存文件并附路径） | `true` |
+| `receiveFiles` | 接收飞书发来的文件：下载后按魔数识别类型保存并投递路径 | `true` |
 | `cardEngine` | 卡片引擎：`v1`（message.patch，默认）或 `cardkit`（CardKit 2.0 打字机流式，需应用支持卡片 2.0） | `v1` |
 | `showReasoning` | 是否在卡片上展示思考过程行 | `true` |
 | `allowedUsers` | 允许的 sender open_id 白名单 | 扫码创建者 |
@@ -147,11 +148,13 @@ TUI 里：
 
 回合卡片上的按钮：⏹ Stop 中断当前回合；🔍 详情 展开/收起工具调用的参数和结果（回合结束后也能展开）；🔐 审批卡片 Allow/Reject 放行或拒绝危险操作；🗂 会话列表卡片上每个会话一个「切换到 N」按钮。
 
-## 图片
+## 文件与图片
 
-**入站**（飞书 → agent）：私聊发图片，桥接下载原图并经宿主附件服务以 ImageBlock 投递给 agent（视觉模型可直接看图）；附件服务不可用时降级为保存文件并附路径。需要配对应用具备 `im:resource` 权限（v0.3.0 新建的应用已包含；旧应用在飞书开发者后台开通并发布版本）。
+**入站文件**（飞书 → agent）：私聊发文件（PDF/Word/Excel/文本等），桥接下载原始字节并按魔数识别类型保存到 `$DSH_HOME/dsh-tui-feishu/files/`，把路径投递给 agent 读取/解析。只接受公开文本或可用工具解析的格式；`receiveFiles` 默认开。
 
-**出站**（agent → 飞书）：`resolveImages`（默认开）在回合结束时把回复里的远程图片下载并上传为飞书 `img_key`，卡片上直接显示。
+**入站图片**（飞书 → agent）：私聊发图片，桥接下载原图并经宿主附件服务以 ImageBlock 投递给 agent（视觉模型可直接看图）；附件服务不可用时降级为保存文件并附路径。需要配对应用具备 `im:resource` 权限（v0.3.0 新建的应用已包含；旧应用在飞书开发者后台开通并发布版本）。
+
+**出站图片**（agent → 飞书）：`resolveImages`（默认开）在回合结束时把回复里的远程图片下载并上传为飞书 `img_key`，卡片上直接显示。
 
 ## 未做（路线图）
 

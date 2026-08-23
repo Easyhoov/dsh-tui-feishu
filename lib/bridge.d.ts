@@ -51,6 +51,10 @@ export type InboundImageResult = {
     readonly kind: 'file';
     readonly path: string;
 };
+/** How an inbound Feishu file was materialized for the agent. */
+export type InboundFileResult = {
+    readonly path: string;
+};
 /** Adapts the dsh agent registry to the bridge's needs (injectable for tests). */
 export interface AgentStore {
     /** The live agent for a session, or `undefined`. */
@@ -113,6 +117,10 @@ export interface BridgeOptions {
     readonly receiveImages?: boolean;
     /** Materialize one inbound image (download + attach/save); absent disables image delivery. */
     readonly resolveInboundImage?: (messageId: string, imageKey: string) => Promise<InboundImageResult | undefined>;
+    /** Deliver inbound Feishu file messages to the agent (default true). */
+    readonly receiveFiles?: boolean;
+    /** Materialize one inbound file (download + save); absent disables file delivery. */
+    readonly resolveInboundFile?: (messageId: string, fileKey: string) => Promise<InboundFileResult | undefined>;
     /** Render reasoning/thinking rows on cards (default true). */
     readonly showReasoning?: boolean;
 }
@@ -149,6 +157,8 @@ export declare class Bridge {
     private senderAllowed;
     private dedupe;
     private handleIncoming;
+    /** Materialize and deliver an inbound file message to the chat's agent. */
+    private deliverFile;
     /** Materialize and deliver an inbound image message to the chat's agent. */
     private deliverImage;
     private handleCommand;

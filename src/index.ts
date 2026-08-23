@@ -35,7 +35,7 @@ import type {} from '@deepseek-ai/dsh-user-approval'
 import type { CommandInvocation } from '@deepseek-ai/dsh-commands'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
-import { Bridge, type AgentStore, type InboundImageResult, type ModelControl, type SessionPrefs } from './bridge.js'
+import { Bridge, type AgentStore, type InboundFileResult, type InboundImageResult, type ModelControl, type SessionPrefs } from './bridge.js'
 import { StreamingCardManager, type CardStream } from './cards.js'
 import { CardKitStreamingManager } from './streaming/cardkit-manager.js'
 import { ReminderStore } from './reminders.js'
@@ -76,6 +76,8 @@ export interface Config {
   readonly resolveImages?: boolean
   /** Accept inbound image messages and deliver them to the agent (default true). */
   readonly receiveImages?: boolean
+  /** Accept inbound file messages and deliver them to the agent (default true). */
+  readonly receiveFiles?: boolean
   /** Card engine: `v1` (message.patch, default) or `cardkit` (CardKit 2.0 typing). */
   readonly cardEngine?: 'v1' | 'cardkit'
   /** Show reasoning/thinking rows on cards (default true). */
@@ -96,6 +98,7 @@ export const Config: z<Config> = z.object({
   locale: z.union([z.const('zh'), z.const('en')]).required(false),
   resolveImages: z.boolean().required(false),
   receiveImages: z.boolean().required(false),
+  receiveFiles: z.boolean().required(false),
   cardEngine: z.union([z.const('v1'), z.const('cardkit')]).required(false),
   showReasoning: z.boolean().required(false),
   allowedUsers: z.array(z.string()).required(false),
@@ -525,6 +528,18 @@ export function apply(ctx: Context, config: Config = {}): void {
       writeFileSync(file, Buffer.from(downloaded.data))
       return { kind: 'file', path: file }
     }
+    const resolveInboundFile = async (
+      messageId: string,
+      fileKey: string,
+    ): Promise<InboundFileResult | undefined> => {
+      const downloaded = await transport.downloadFile(messageId, fileKey)
+      if (downloaded === undefined) return undefined
+      const dir = join(dataDir, 'files')
+      mkdirSync(dir, { recursive: true })
+      const file = join(dir, `feishu-${Date.now()}-${randomUUID().slice(0, 8)}.${downloaded.extension || 'bin'}`)
+      writeFileSync(file, Buffer.from(downloaded.data))
+      return { path: file }
+    }
 
     const bridge = new Bridge({
       transport,
@@ -537,9 +552,11 @@ export function apply(ctx: Context, config: Config = {}): void {
       reminders,
       ...(config.resolveImages === undefined ? {} : { resolveImages: config.resolveImages }),
       ...(config.receiveImages === undefined ? {} : { receiveImages: config.receiveImages }),
+      ...(config.receiveFiles === undefined ? {} : { receiveFiles: config.receiveFiles }),
       ...(config.showReasoning === undefined ? {} : { showReasoning: config.showReasoning }),
       ...(allowed.length === 0 ? {} : { allowedUsers: allowed }),
       resolveInboundImage,
+      resolveInboundFile,
     })
     bridgeRef = bridge
     bridge.start()

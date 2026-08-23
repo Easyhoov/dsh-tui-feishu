@@ -59,7 +59,7 @@ ok('unsupported message types are ignored', () => {
       message_id: 'om_3',
       chat_id: 'oc_1',
       chat_type: 'p2p',
-      message_type: 'file',
+      message_type: 'sticker',
       content: JSON.stringify({ file_key: 'f' }),
       create_time: '1787346000000',
       mentions: [],

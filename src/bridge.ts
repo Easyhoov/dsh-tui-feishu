@@ -54,6 +54,9 @@ export type InboundImageResult =
   | { readonly kind: 'attachment'; readonly ref: ImageAttachmentRefLike }
   | { readonly kind: 'file'; readonly path: string }
 
+/** How an inbound Feishu file was materialized for the agent. */
+export type InboundFileResult = { readonly path: string }
+
 /** Adapts the dsh agent registry to the bridge's needs (injectable for tests). */
 export interface AgentStore {
   /** The live agent for a session, or `undefined`. */
@@ -116,6 +119,10 @@ export interface BridgeOptions {
   readonly receiveImages?: boolean
   /** Materialize one inbound image (download + attach/save); absent disables image delivery. */
   readonly resolveInboundImage?: (messageId: string, imageKey: string) => Promise<InboundImageResult | undefined>
+  /** Deliver inbound Feishu file messages to the agent (default true). */
+  readonly receiveFiles?: boolean
+  /** Materialize one inbound file (download + save); absent disables file delivery. */
+  readonly resolveInboundFile?: (messageId: string, fileKey: string) => Promise<InboundFileResult | undefined>
   /** Render reasoning/thinking rows on cards (default true). */
   readonly showReasoning?: boolean
 }
@@ -359,6 +366,11 @@ export class Bridge {
       await this.deliverImage(message.chatId, message.messageId, message.imageKey)
       return
     }
+    if (message.fileKey !== undefined && message.fileKey !== '') {
+      this.counters.delivered += 1
+      await this.deliverFile(message.chatId, message.messageId, message.fileKey)
+      return
+    }
     if (text === '') {
       this.counters.dropped += 1
       return
@@ -369,6 +381,32 @@ export class Bridge {
       return
     }
     await this.deliver(message.chatId, text)
+  }
+
+  /** Materialize and deliver an inbound file message to the chat's agent. */
+  private async deliverFile(chatId: string, messageId: string, fileKey: string): Promise<void> {
+    const resolve = this.options.resolveInboundFile
+    if (this.options.receiveFiles === false || resolve === undefined) {
+      this.options.logger.warn(`inbound file ignored (receiveFiles=${this.options.receiveFiles === false ? 'off' : 'unavailable'})`)
+      await this.options.transport.sendText(chatId, '📎 当前未开启文件接收（或宿主不支持）。')
+      return
+    }
+    let result: InboundFileResult | undefined
+    try {
+      result = await resolve(messageId, fileKey)
+    } catch (error: unknown) {
+      this.options.logger.warn(`inbound file resolution failed: ${String(error)}`)
+    }
+    if (result === undefined) {
+      await this.options.transport.sendText(
+        chatId,
+        '📎 文件接收失败（下载出错）——请重试；若持续失败可在 TUI 里看日志。',
+      )
+      return
+    }
+    await this.deliver(chatId, '📎 文件', [
+      { type: 'text', text: `📎 用户发来文件：${result.path}（如需查看/解析可用 read_file 等工具读取）` },
+    ])
   }
 
   /** Materialize and deliver an inbound image message to the chat's agent. */

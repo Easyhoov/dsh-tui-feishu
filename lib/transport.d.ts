@@ -27,10 +27,12 @@ export interface FeishuMessage {
     readonly chatId: string;
     readonly chatType: 'p2p' | 'group';
     readonly senderOpenId: string;
-    /** Visible text for `text` messages ('' for image-only messages). */
+    /** Visible text for `text` messages ('' for image/file-only messages). */
     readonly text: string;
     /** `image` messages carry the platform image key (download via `downloadImage`). */
     readonly imageKey?: string;
+    /** `file` messages carry the platform file key (download via `downloadFile`). */
+    readonly fileKey?: string;
     /** Open ids of users @-mentioned in the message (bot excluded by caller). */
     readonly mentions: readonly string[];
 }
@@ -101,6 +103,13 @@ export interface DownloadedImage {
 }
 /** Sniff the media type of raw image bytes (JPEG/PNG/GIF/WebP). */
 export declare function sniffImageMediaType(data: Uint8Array): string | undefined;
+/** Sniff a generic download's extension from magic bytes ('' for unknown). */
+export declare function sniffFileType(data: Uint8Array): string;
+/** One downloaded inbound file: raw bytes plus the sniffed extension. */
+export interface DownloadedFile {
+    readonly data: Uint8Array;
+    readonly extension: string;
+}
 /**
  * The Feishu transport: long-connection receive + API send/update.
  */
@@ -128,6 +137,8 @@ export declare class LarkTransport {
     getBotOpenId(): string | undefined;
     /** Download an inbound image message's bytes by its message id + image key. */
     downloadImage(messageId: string, imageKey: string): Promise<DownloadedImage | undefined>;
+    /** Download an inbound file message's bytes by its message id + file key. */
+    downloadFile(messageId: string, fileKey: string): Promise<DownloadedFile | undefined>;
     /** Send a plain text message to a chat. */
     sendText(chatId: string, text: string): Promise<void>;
     /** Send an interactive card; resolves with the created message id. */

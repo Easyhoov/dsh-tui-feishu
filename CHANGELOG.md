@@ -2,6 +2,17 @@
 
 # Changelog
 
+# Changelog
+
+## 0.3.2 (2026-08-22)
+
+### 新增
+- **入站文件接收**（`receiveFiles`，默认开）：飞书文件消息（PDF/Word/Excel/
+  文本等）经消息资源 API 下载（`type=file`），魔数识别类型
+  （pdf/zip/gz/图片/文本/bin）保存到 `$DSH_HOME/dsh-tui-feishu/files/`，
+  路径投递给 agent 读取解析。与图片接收共享同一下载管线。
+- 新增测试套件 `test/files.mjs`（5 项）。`npm run verify` 全绿。
+
 ## 0.3.1 (2026-08-22)
 
 ### 新增

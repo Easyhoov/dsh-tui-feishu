@@ -37,10 +37,12 @@ export interface FeishuMessage {
   readonly chatId: string
   readonly chatType: 'p2p' | 'group'
   readonly senderOpenId: string
-  /** Visible text for `text` messages ('' for image-only messages). */
+  /** Visible text for `text` messages ('' for image/file-only messages). */
   readonly text: string
   /** `image` messages carry the platform image key (download via `downloadImage`). */
   readonly imageKey?: string
+  /** `file` messages carry the platform file key (download via `downloadFile`). */
+  readonly fileKey?: string
   /** Open ids of users @-mentioned in the message (bot excluded by caller). */
   readonly mentions: readonly string[]
 }
@@ -146,7 +148,7 @@ export function asFeishuError(operation: string, error: unknown): Error {
 /** Strip `<at …>name</at>` mention placeholders from Feishu text content. */
 const MENTION_PATTERN = /<at[^>]*>.*?<\/at>/g
 /** Message types the bridge understands; everything else is ignored. */
-const SUPPORTED_MESSAGE_TYPES = new Set(['text', 'image'])
+const SUPPORTED_MESSAGE_TYPES = new Set(['text', 'image', 'file'])
 
 /**
  * Normalize a raw `im.message.receive_v1` payload into a bridge message, or
@@ -158,10 +160,12 @@ export function normalizeMessageEvent(data: RawMessageEvent): FeishuMessage | un
   const senderOpenId = data.sender?.sender_id?.open_id ?? ''
   let text = ''
   let imageKey: string | undefined
+  let fileKey: string | undefined
   try {
-    const content = JSON.parse(message.content) as { text?: string; image_key?: string }
+    const content = JSON.parse(message.content) as { text?: string; image_key?: string; file_key?: string }
     text = content.text ?? ''
     imageKey = content.image_key
+    fileKey = content.file_key
   } catch {
     return undefined
   }
@@ -173,6 +177,7 @@ export function normalizeMessageEvent(data: RawMessageEvent): FeishuMessage | un
     senderOpenId,
     text,
     ...(imageKey === undefined || imageKey === '' ? {} : { imageKey }),
+    ...(fileKey === undefined || fileKey === '' ? {} : { fileKey }),
     mentions: (message.mentions ?? [])
       .map(mention => mention.id?.open_id)
       .filter((id): id is string => id !== undefined && id !== ''),
@@ -270,27 +275,48 @@ export function sniffImageMediaType(data: Uint8Array): string | undefined {
   return undefined
 }
 
+/** Sniff a generic download's extension from magic bytes ('' for unknown). */
+export function sniffFileType(data: Uint8Array): string {
+  if (data.length >= 5 && data[0] === 0x25 && data[1] === 0x50 && data[2] === 0x44 && data[3] === 0x46 && data[4] === 0x2d) return 'pdf'
+  if (data.length >= 4 && data[0] === 0x50 && data[1] === 0x4b && data[2] === 0x03 && data[3] === 0x04) return 'zip'
+  if (data.length >= 2 && data[0] === 0x1f && data[1] === 0x8b) return 'gz'
+  if (data.length >= 4 && data[0] === 0x7f && data[1] === 0x45 && data[2] === 0x4c && data[3] === 0x46) return 'bin'
+  if (data.length >= 8 && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return 'png'
+  if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return 'jpg'
+  if (data.length >= 6 && data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x38) return 'gif'
+  if (data.length >= 4 && data[0] === 0x52 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x46) return 'webp'
+  // Text-like: no NUL bytes in the head and mostly printable characters.
+  const probe = data.subarray(0, Math.min(data.length, 4096))
+  let printable = 0
+  for (const byte of probe) {
+    if (byte === 0) return 'bin'
+    if (byte === 9 || byte === 10 || byte === 13 || (byte >= 32 && byte < 127) || byte >= 0x80) printable += 1
+  }
+  return probe.length > 0 && printable / probe.length > 0.9 ? 'txt' : 'bin'
+}
+
 /**
- * Download an inbound image message's raw bytes. The working endpoint is the
+ * Download a message resource (image file or generic file) via the
  * message-resource API (`GET /im/v1/messages/{message_id}/resources/
- * {file_key}?type=image`); `im/v1/images/{image_key}` rejects these keys with
- * 234001. Needs the `im:resource` permission. Resolves `undefined` when the
- * bytes are not a supported image; throws `FeishuApiError` on a platform
- * business error.
+ * {file_key}?type=<image|file>`); `im/v1/images/{image_key}` rejects image
+ * keys with 234001. Needs the `im:resource` permission. Throws
+ * `FeishuApiError` on a platform business error; JSON error bodies in binary
+ * response mode are decoded so the real code survives.
  */
-async function downloadFeishuImage(
+async function downloadMessageResource(
   client: Client,
   messageId: string,
-  imageKey: string,
+  fileKey: string,
+  resourceType: 'image' | 'file',
   logger: TransportLogger | undefined,
-): Promise<DownloadedImage | undefined> {
+): Promise<Uint8Array | undefined> {
   let response
   try {
     response = await withTransientRetry(async () => {
       try {
         return await client.request<unknown>({
           method: 'GET',
-          url: `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(imageKey)}?type=image`,
+          url: `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(fileKey)}?type=${resourceType}`,
           responseType: 'arraybuffer',
           timeout: 20_000,
         })
@@ -302,8 +328,8 @@ async function downloadFeishuImage(
     throw asFeishuError('im.v1.message.resource.get', error)
   }
   // The Node http layer returns a Buffer (a Uint8Array subclass), not an
-  // ArrayBuffer - accept both shapes before sniffing. A platform error
-  // arrives as a JSON body even in binary response mode (bytes[0] === '{').
+  // ArrayBuffer - accept both shapes. A platform error arrives as a JSON
+  // body even in binary response mode (bytes[0] === '{').
   const raw =
     response instanceof ArrayBuffer
       ? new Uint8Array(response)
@@ -312,25 +338,46 @@ async function downloadFeishuImage(
         : undefined
   const bytes = raw !== undefined && raw.length > 0 ? raw : undefined
   if (bytes === undefined) {
-    logger?.warn(`image download returned no bytes for key ${imageKey.slice(0, 12)}…`)
+    logger?.warn(`resource download returned no bytes for key ${fileKey.slice(0, 12)}…`)
     return undefined
   }
   if (bytes[0] === 0x7b /* '{' */) {
     try {
       const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { code?: number; msg?: string }
       const code = typeof parsed.code === 'number' ? parsed.code : -1
-      throw new FeishuApiError('im.v1.message.resource.get', code, parsed.msg ?? 'image download rejected')
+      throw new FeishuApiError('im.v1.message.resource.get', code, parsed.msg ?? 'resource download rejected')
     } catch (error: unknown) {
       if (error instanceof FeishuApiError) throw error
-      // Not JSON after all - fall through to sniffing.
+      // Not JSON after all - fall through.
     }
   }
+  return bytes
+}
+
+/**
+ * Download an inbound image message's raw bytes; resolves `undefined` when
+ * the bytes are not a supported image.
+ */
+async function downloadFeishuImage(
+  client: Client,
+  messageId: string,
+  imageKey: string,
+  logger: TransportLogger | undefined,
+): Promise<DownloadedImage | undefined> {
+  const bytes = await downloadMessageResource(client, messageId, imageKey, 'image', logger)
+  if (bytes === undefined) return undefined
   const mediaType = sniffImageMediaType(bytes)
   if (mediaType === undefined) {
     logger?.warn(`image download for key ${imageKey.slice(0, 12)}… is not a supported image type`)
     return undefined
   }
   return { data: bytes, mediaType }
+}
+
+/** One downloaded inbound file: raw bytes plus the sniffed extension. */
+export interface DownloadedFile {
+  readonly data: Uint8Array
+  readonly extension: string
 }
 
 /**
@@ -434,6 +481,13 @@ export class LarkTransport {
   /** Download an inbound image message's bytes by its message id + image key. */
   async downloadImage(messageId: string, imageKey: string): Promise<DownloadedImage | undefined> {
     return downloadFeishuImage(this.client, messageId, imageKey, this.logger)
+  }
+
+  /** Download an inbound file message's bytes by its message id + file key. */
+  async downloadFile(messageId: string, fileKey: string): Promise<DownloadedFile | undefined> {
+    const bytes = await downloadMessageResource(this.client, messageId, fileKey, 'file', this.logger)
+    if (bytes === undefined) return undefined
+    return { data: bytes, extension: sniffFileType(bytes) }
   }
 
   /** Send a plain text message to a chat. */
