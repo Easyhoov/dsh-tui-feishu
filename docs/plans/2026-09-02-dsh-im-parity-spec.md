@@ -215,3 +215,21 @@ dsh-im（v4.7.0，2026-09-02 发布）的飞书渠道在三个方向上领先本
    仍保留运行时软探测（`register` 缺失/抛错 → 功能降级标注 unavailable）。
 3. ~~飞书增量授权~~ **已关闭**：仅 user OAuth 链路适用 → Feature D 采用探针自检降级方案（见 §7）。
 4. 引用 `post` 富文本展平的保真度——本期纯文本 + 图片占位计数（YAGNI）。
+
+---
+
+## 12. 实施完成记录（2026-09-02）
+
+| Phase | 版本 | Commit | 内容 | 状态 |
+|---|---|---|---|---|
+| 1 | v0.4.0 | 2bf6713 + ca6f264 | Feature A 引用回复、Feature B 图片预检查、inbound-sanitize | ✅ 已上线 |
+| 2 | v0.5.0 | dd5b479 | Feature C dsh_im_return_file、Feature D /repair | ✅ 已上线 |
+| 3 | v0.6.0 | b26931f | Feature E watchdog、Feature F /history /compact | ✅ 已上线 |
+
+三版均已 `npm run verify` 全绿、`npm pack` 装入 dsh-tui profile、重启桥确认
+`bridge ready` + `feishu long connection ready`。测试：reply 15、image-fallback 6、
+outbound-files 6（+既有套件）。
+
+**待真机验收（用户操作）**：引用消息提问；非视觉模型下收图（观察降级文案）；
+`/repair`、`/history`、`/compact`、`/status`；让 agent 调 `dsh_im_return_file`
+发回文件。若 `/compact` 提示宿主不支持或 `/repair` 判定不准 → 按 §11 开放点调参。
