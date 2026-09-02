@@ -90,47 +90,43 @@ dsh-im（v4.7.0，2026-09-02 发布）的飞书渠道在三个方向上领先本
 - [ ] 引用内容含 `/new` → 不会开新会话。
 - [ ] `npm run verify` 全绿。
 
-## 5. Feature B：非视觉模型图片回退（P0）
+## 5. Feature B：非视觉模型图片预检查落盘（P0）
+
+> **验证结论（2026-09-02，改设计）**：`MODEL_DOES_NOT_SUPPORT_IMAGES` 错误码只存在于 web host 的
+> `dsh-host-apiproxy`；TUI 路径（`agent.followup` → dsh-agent → dsh-llm）对非视觉模型**不报错**，
+> 而是把图片静默替换为文本占位符（`dsh-llm` `projectImagesForTextModel()`）——用户只会得到
+> "图片已离线"式的空答复，且无任何可捕获的失败信号。因此错误驱动回退方案不成立，
+> 改为**投递前预检查**：同步、无重试、无暂存表，更简单也更稳。
 
 ### 5.1 行为定义
 
-当前会话模型不支持图片输入时（host 拒绝 prompt，错误码 `MODEL_DOES_NOT_SUPPORT_IMAGES`），不把错误直接甩给用户，而是自动把同一批图片按既有文件管线落盘，以纯文本回合重试一次。
+`deliverImage()` 在投递 image block 之前，解析当前会话生效模型（chat pin / 插件配置 / host 默认，
+复用 `index.ts` 现有 route 解析），经 `ctx.get('llm').resolveModelInfo(provider, model)` 查
+`inputModalities`：
 
-### 5.2 数据流
+- 含 `'image'` 或 `inputModalities === undefined`（未知即放行，与 dsh-llm 判定一致）→ 现有行为不变；
+- 明确不含 `'image'` → 不投 image block，图片字节直接走**现有文件落盘管线**，以纯文本回合投递
+  「📷 用户发来一张图片，已保存到 <path>。当前模型不支持直接看图——请用 read_image / run_code 等
+  工具读取分析」并附用户原文本（若有）。同时发一条用户提示：当前模型不支持图片，可 /model 切换。
 
-1. **暂存**：`deliverImage()` 附件路径成功时，把图片字节（或已落盘 path）放入有界暂存表：`Map<chatId, {messageId, path|bytes, at}>`，容量 ≤3，TTL 10min，先进先出。
-2. **触发**：`handleSessionEvent()` 的 `turn/end` 分支中，`reason.kind==='error' && reason.error.code==='MODEL_DOES_NOT_SUPPORT_IMAGES'` 时，查暂存表：
-   - 命中 → 走回退（5.2.3）；未命中 → 维持现状（错误终态）。
-3. **回退动作**：
-   - 字节未落盘的先按 `files.mjs` 同管线写盘（魔数嗅探复用现有实现）。
-   - 取消当前错误卡片的错误终态呈现，卡片标注「图片已转文件重试」。
-   - 发起新回合，content 为纯文本：
-     ```
-     {原用户文本或"（用户发送了一张图片）"}
+### 5.2 实现要点
 
-     当前会话模型不支持直接接收图片输入。用户发送的图片已作为文件保存到工作区。请使用可用工具分析这些图片文件后回答（如 read_file / run_code 解析字节、元数据、OCR），不要假设自己能直接看到图片内容。
+- 模型信息查询结果按 `provider:model` 缓存（TTL 10min，进程内 Map），避免每张图一次 RPC。
+- `resolveModelInfo` 失败 → 按未知模型处理，走现有行为（不阻塞收图）。
+- 取消/竞态语义不再需要（同步判定，投递前完成），天然无双投风险。
+- 不引入 `<dsh_im_files>` 清单标签——本桥文件投递已有成熟文案，保持一致。
 
-     <dsh_im_files>{"description":"用户随消息上传的文件，路径相对当前工作区","files":[{"path":"...","name":"...","bytes":N}]}</dsh_im_files>
-     ```
-   - 回退回合**仅一次**：暂存表项取出即删；回退回合再次报同码 → 如实显示错误。
-4. **取消语义**：回退发起前检查该 chat 回合是否已被用户 Stop/abandon——已取消则不回退、不投递。
+### 5.3 配置与测试
 
-### 5.3 前置验证（实现前必须完成）
+- 新配置 `imageFileFallback`（默认 `on`；`off` 时维持旧行为即静默投影）。
+- 新测试 `test/image-fallback.mjs`：modalities 三态判定、缓存命中、resolveModelInfo 失败放行、
+  开关关闭走旧路径。
 
-- 真机确认 dsh-tui host 在 `turn/end` error 中透出的 `code` 字符串确实是 `MODEL_DOES_NOT_SUPPORT_IMAGES`（dsh-im 从 host RPC 得到此码；本地经 TUI 桥一层，码值需实测）。若码不同，以实测为准，实现时把码表做成常量便于修正。
-- 兼容 0.1.1-rc.2 与新版两种 `reason` 挂载位置（现有 `topLevel()/data` 双读逻辑已覆盖）。
+### 5.4 验收
 
-### 5.4 配置与测试
-
-- 新配置 `imageFileFallback`（默认 `on`）。
-- 新测试 `test/image-fallback.mjs`：触发条件、暂存 TTL/容量、取消后不回退、仅一次、清单格式。
-
-### 5.5 验收
-
-- [ ] 视觉模型收图 → 行为不变。
-- [ ] 非视觉模型收图 → 自动转文件重试，agent 用工具识图并回答。
-- [ ] 重试回合中用户点 Stop → 不再投递。
-- [ ] 非图片错误 → 维持现状错误展示。
+- [ ] 视觉模型收图 → 行为不变（image block）。
+- [ ] 非视觉模型收图 → 落盘 + 工具识图指引 + 用户提示可 /model。
+- [ ] `imageFileFallback: false` → 行为与 0.3.2 一致。
 
 ## 6. Feature C：出站文件回传 `dsh_im_return_file`（P1，可行性前置）
 
@@ -156,22 +152,28 @@ dsh-im（v4.7.0，2026-09-02 发布）的飞书渠道在三个方向上领先本
 - [ ] 飞书内让 agent 生成 CSV 并 `dsh_im_return_file` → 聊天里收到可下载文件。
 - [ ] facet 缺失环境 → `/status` 标注 unavailable，桥正常运行。
 
-## 7. Feature D：`/repair` 权限增量补全（P1，先调研后定形）
+## 7. Feature D：`/repair` 权限自检（P1，降级方案）
 
-### 7.1 问题
+> **调研结论（2026-09-02，降级定形）**：飞书「增量授权」（OAuth scope 参数）仅适用于
+> **user_access_token** 网页授权链路；机器人自建应用的 tenant 权限必须走开发者后台
+> 申请→审批→发布，无 API 可编程补全，lark node-sdk 亦无 patch-job 接口。故采用降级方案。
 
-本地加新 scope（如 0.3.0 的 `im:resource`）必须重新扫码配对，运维体验差。dsh-im 支持增量授权 + 审批流。
+### 7.1 行为
 
-### 7.2 调研项（实现前完成）
+私聊 `/repair`：对插件依赖的关键 scopes 做探针检测，逐项报告可用性并给出补全指引。
 
-- 飞书「应用增量授权」API 在扫码配对（自建应用）模式下是否可用；
-- 若可用：`/repair` 生成增量授权链接 → 用户授权 → 新 scopes 生效（凭据不变）；
-- 若不可用：降级方案 = `/repair` 检测当前应用已开通 scopes（`im.v1` 探针调用逐个试）→ 缺什么提示什么 + 给出重新配对的准确指引。降级方案本身也有价值（用户不用猜）。
+- 检测项与方法（探针调用，错误码区分权限缺失 vs 其它）：
+  - `im:message`（收消息）：长连接在即，跳过（能收到 /repair 本身即说明通）；
+  - `im:message:send_as_bot`（发消息）：任一探针成功即证；
+  - `im:chat`：`im.v1.chats.get` 当前 chat；
+  - `im:resource`（图片/文件下载）：`im.v1.messageResource.get` 对近期图片消息（错误码区分）。
+- 输出：每项 ✅/❌ + 缺失项的补全步骤（开发者后台 → 权限管理 → 申请 → 发布版本）+ 重新扫码指引。
+- 不做自动重试循环；探针超时 5s/项，总计 <15s。
 
-### 7.3 验收（按调研结果二选一）
+### 7.2 验收
 
-- [ ] 方案一：`/repair` 后新权限即时可用，无需重新配对。
-- [ ] 方案二：`/repair` 准确列出缺失权限与补全步骤。
+- [ ] 权限齐全时 `/repair` 全 ✅。
+- [ ] 手动关闭某权限后 `/repair` 准确标出缺失项与步骤。
 
 ## 8. Feature E：连接 watchdog（P2）
 
@@ -204,9 +206,12 @@ dsh-im（v4.7.0，2026-09-02 发布）的飞书渠道在三个方向上领先本
 
 每个 Feature 独立 TDD：先写失败测试 → 最小实现 → `npm run verify` 全绿 → CHANGELOG/README 同步（文档-实现一致性铁律）→ commit。
 
-## 11. 开放问题
+## 11. 开放问题（2026-09-02 验证后更新）
 
-1. `MODEL_DOES_NOT_SUPPORT_IMAGES` 码值经 TUI 桥透传后是否原样保留？（Feature B 前置验证，实测定）
-2. dsh-tui host 是否有 tools facet / 工具注册通道？（Feature C gate）
-3. 扫码配对模式能否走飞书增量授权？（Feature D 定形）
-4. 引用 `post` 富文本展平的保真度要求——本期纯文本即可，还是需要图片 key 一并下载？（倾向纯文本，YAGNI）
+1. ~~`MODEL_DOES_NOT_SUPPORT_IMAGES` 码值经 TUI 桥透传~~ **已关闭**：TUI 路径不存在此错误，
+   dsh-llm 静默投影图片为文本占位符 → Feature B 改为预检查（见 §5）。
+2. ~~dsh-tui host 是否有 tools facet~~ **已关闭**：`ctx.get('tools')` 存在，
+   `tools.register(definition)` 可用（`output:{schema,render}` 必需；`run_code` 为保留名）。
+   仍保留运行时软探测（`register` 缺失/抛错 → 功能降级标注 unavailable）。
+3. ~~飞书增量授权~~ **已关闭**：仅 user OAuth 链路适用 → Feature D 采用探针自检降级方案（见 §7）。
+4. 引用 `post` 富文本展平的保真度——本期纯文本 + 图片占位计数（YAGNI）。
