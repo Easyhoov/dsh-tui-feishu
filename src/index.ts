@@ -78,6 +78,10 @@ export interface Config {
   readonly receiveImages?: boolean
   /** Accept inbound file messages and deliver them to the agent (default true). */
   readonly receiveFiles?: boolean
+  /** Resolve quoted/replied-message context for the agent (default true). */
+  readonly replyReference?: boolean
+  /** Deliver images as files when the model lacks image input (default true). */
+  readonly imageFileFallback?: boolean
   /** Card engine: `v1` (message.patch, default) or `cardkit` (CardKit 2.0 typing). */
   readonly cardEngine?: 'v1' | 'cardkit'
   /** Show reasoning/thinking rows on cards (default true). */
@@ -99,6 +103,8 @@ export const Config: z<Config> = z.object({
   resolveImages: z.boolean().required(false),
   receiveImages: z.boolean().required(false),
   receiveFiles: z.boolean().required(false),
+  replyReference: z.boolean().required(false),
+  imageFileFallback: z.boolean().required(false),
   cardEngine: z.union([z.const('v1'), z.const('cardkit')]).required(false),
   showReasoning: z.boolean().required(false),
   allowedUsers: z.array(z.string()).required(false),
@@ -541,6 +547,32 @@ export function apply(ctx: Context, config: Config = {}): void {
       return { path: file }
     }
 
+    /** Feature B: provider:model → {at, supports} modality cache (TTL 10 min). */
+    const modelModalityCache = new Map<string, { at: number; supports: boolean | undefined }>()
+
+    const resolveModelSupportsImages = async (route: {
+      provider: string
+      model: string
+    }): Promise<boolean | undefined> => {
+      // Process-level cache keyed by provider:model (SPEC §5.2): avoid one
+      // resolveModelInfo RPC per inbound image; TTL 10 min.
+      const key = `${route.provider}:${route.model}`
+      const cached = modelModalityCache.get(key)
+      const now = Date.now()
+      if (cached !== undefined && now - cached.at < 600_000) return cached.supports
+      const llm = ctx.get('llm') as
+        | { resolveModelInfo?: (provider: string, model: string) => Promise<{ inputModalities?: readonly string[] }> }
+        | undefined
+      if (llm?.resolveModelInfo === undefined) return undefined
+      const info = await llm.resolveModelInfo(route.provider, route.model)
+      // Same rule as dsh-llm's own admission check: undefined modalities =
+      // unknown = allow; explicit absence of 'image' = not supported.
+      const supports =
+        info.inputModalities === undefined ? undefined : info.inputModalities.includes('image')
+      modelModalityCache.set(key, { at: now, supports })
+      return supports
+    }
+
     const bridge = new Bridge({
       transport,
       sessionMap,
@@ -554,9 +586,12 @@ export function apply(ctx: Context, config: Config = {}): void {
       ...(config.receiveImages === undefined ? {} : { receiveImages: config.receiveImages }),
       ...(config.receiveFiles === undefined ? {} : { receiveFiles: config.receiveFiles }),
       ...(config.showReasoning === undefined ? {} : { showReasoning: config.showReasoning }),
+      ...(config.replyReference === undefined ? {} : { replyReference: config.replyReference }),
+      ...(config.imageFileFallback === undefined ? {} : { imageFileFallback: config.imageFileFallback }),
       ...(allowed.length === 0 ? {} : { allowedUsers: allowed }),
       resolveInboundImage,
       resolveInboundFile,
+      resolveModelSupportsImages,
     })
     bridgeRef = bridge
     bridge.start()

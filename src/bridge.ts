@@ -123,6 +123,12 @@ export interface BridgeOptions {
   readonly receiveFiles?: boolean
   /** Materialize one inbound file (download + save); absent disables file delivery. */
   readonly resolveInboundFile?: (messageId: string, fileKey: string) => Promise<InboundFileResult | undefined>
+  /** Resolve quoted-message context (default on; needs transport.getMessage). */
+  readonly replyReference?: boolean
+  /** Model-info probe for Feature B pre-check; absent keeps 0.3.2 behavior. */
+  readonly resolveModelSupportsImages?: (route: { provider: string; model: string }) => Promise<boolean | undefined>
+  /** Feature B: deliver images as files for non-visual models (default on). */
+  readonly imageFileFallback?: boolean
   /** Render reasoning/thinking rows on cards (default true). */
   readonly showReasoning?: boolean
 }
@@ -266,6 +272,9 @@ function truncateSummary(text: string): string {
 /**
  * The Feishu↔dsh bridge.
  */
+import { buildReplyReference, replyTag, replyTargetId, unavailableReasonFromError } from './reply-reference.js'
+import type { PlatformMessage, ReplyUnavailableReason } from './reply-reference.js'
+
 export class Bridge {
   private readonly seen = new Set<string>()
   private readonly turns = new Map<string, TurnState>()
@@ -380,7 +389,28 @@ export class Bridge {
       await this.handleCommand(message.chatId, text)
       return
     }
-    await this.deliver(message.chatId, text)
+    const replyTag = await this.resolveReplyTag(message)
+    await this.deliver(message.chatId, text, replyTag === undefined ? undefined : [replyTag, { type: 'text', text }])
+  }
+
+  /**
+   * Feature A (SPEC §4): resolve the quoted-message context for one inbound
+   * message into a `<dsh_im_reply_to>` text block. Bounded, single attempt,
+   * never throws; quoted content is data and never reaches command dispatch.
+   */
+  private async resolveReplyTag(message: FeishuMessage): Promise<{ type: 'text'; text: string } | undefined> {
+    if (this.options.replyReference === false) return undefined
+    const target = replyTargetId(message)
+    if (target === undefined) return undefined
+    let lookup: { ok: true; message: PlatformMessage } | { ok: false; reason?: ReplyUnavailableReason }
+    try {
+      const fetched = await this.options.transport.getMessage(target)
+      lookup = { ok: true, message: fetched }
+    } catch (error: unknown) {
+      this.options.logger.warn(`reply reference lookup failed for ${target}: ${String(error)}`)
+      lookup = { ok: false, reason: unavailableReasonFromError(error) }
+    }
+    return { type: 'text', text: `<dsh_im_reply_to>${replyTag(buildReplyReference(lookup))}</dsh_im_reply_to>` }
   }
 
   /** Materialize and deliver an inbound file message to the chat's agent. */
@@ -430,6 +460,20 @@ export class Bridge {
       )
       return
     }
+    // Feature B (SPEC §5): when the chat's effective model cannot take image
+    // input, skip the image block and deliver the saved file as text — the
+    // host would otherwise silently project the image to a placeholder.
+    if (result.kind === 'attachment' && (await this.modelLacksImageInput(chatId)) === true) {
+      this.options.logger.info(`model for ${chatId} lacks image input; re-materializing image as file`)
+      await this.options.transport.sendText(
+        chatId,
+        '📷 当前模型不支持直接看图——图片已作为文件保存到会话工作区，agent 会用工具读取分析；可 /model 切换视觉模型。',
+      )
+      await this.deliver(chatId, '📷 图片（转文件）', [
+        { type: 'text', text: '📷 用户发来一张图片，当前模型不支持直接看图。图片已通过入站文件管线保存到会话工作区。请用 read_image / run_code 等工具读取该文件分析图片内容；不要假设自己能直接看到图片。' },
+      ])
+      return
+    }
     const blocks: { type: string; [key: string]: unknown }[] =
       result.kind === 'attachment'
         ? [
@@ -438,6 +482,27 @@ export class Bridge {
           ]
         : [{ type: 'text', text: `📷 用户发来一张图片，已保存到 ${result.path}（如需查看可用 read_image 读取）。` }]
     await this.deliver(chatId, '📷 图片', blocks)
+  }
+
+  /**
+   * Whether the chat's effective model definitively lacks image input.
+   * `false`/`undefined` (visual model, unknown, probe absent, or probe
+   * failure) keeps the default image-block behavior — fail open, like
+   * dsh-llm's own admission check.
+   */
+  private async modelLacksImageInput(chatId: string): Promise<boolean | undefined> {
+    if (this.options.imageFileFallback === false) return false
+    const probe = this.options.resolveModelSupportsImages
+    if (probe === undefined) return undefined
+    const route = this.options.modelControl?.get(chatId)
+    if (route === undefined) return undefined
+    try {
+      const supports = await probe(route)
+      return supports === undefined ? undefined : !supports
+    } catch (error: unknown) {
+      this.options.logger.warn(`image-input probe failed: ${String(error)}`)
+      return undefined
+    }
   }
 
   private async handleCommand(chatId: string, line: string): Promise<void> {

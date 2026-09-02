@@ -121,14 +121,20 @@ export interface BridgeOptions {
     readonly receiveFiles?: boolean;
     /** Materialize one inbound file (download + save); absent disables file delivery. */
     readonly resolveInboundFile?: (messageId: string, fileKey: string) => Promise<InboundFileResult | undefined>;
+    /** Resolve quoted-message context (default on; needs transport.getMessage). */
+    readonly replyReference?: boolean;
+    /** Model-info probe for Feature B pre-check; absent keeps 0.3.2 behavior. */
+    readonly resolveModelSupportsImages?: (route: {
+        provider: string;
+        model: string;
+    }) => Promise<boolean | undefined>;
+    /** Feature B: deliver images as files for non-visual models (default on). */
+    readonly imageFileFallback?: boolean;
     /** Render reasoning/thinking rows on cards (default true). */
     readonly showReasoning?: boolean;
 }
 /** One-line summary of a tool call for the activity rows. */
 export declare function toolRowSummary(name: string, argsJson: string): string;
-/**
- * The Feishu↔dsh bridge.
- */
 export declare class Bridge {
     private readonly options;
     private readonly seen;
@@ -157,10 +163,23 @@ export declare class Bridge {
     private senderAllowed;
     private dedupe;
     private handleIncoming;
+    /**
+     * Feature A (SPEC §4): resolve the quoted-message context for one inbound
+     * message into a `<dsh_im_reply_to>` text block. Bounded, single attempt,
+     * never throws; quoted content is data and never reaches command dispatch.
+     */
+    private resolveReplyTag;
     /** Materialize and deliver an inbound file message to the chat's agent. */
     private deliverFile;
     /** Materialize and deliver an inbound image message to the chat's agent. */
     private deliverImage;
+    /**
+     * Whether the chat's effective model definitively lacks image input.
+     * `false`/`undefined` (visual model, unknown, probe absent, or probe
+     * failure) keeps the default image-block behavior — fail open, like
+     * dsh-llm's own admission check.
+     */
+    private modelLacksImageInput;
     private handleCommand;
     /** Best-effort persist of the session map (never breaks a command). */
     private persistMap;

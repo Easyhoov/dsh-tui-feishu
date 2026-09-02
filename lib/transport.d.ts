@@ -33,6 +33,10 @@ export interface FeishuMessage {
     readonly imageKey?: string;
     /** `file` messages carry the platform file key (download via `downloadFile`). */
     readonly fileKey?: string;
+    /** `message_id` this message replies-to/quotes, when present. */
+    readonly parentId?: string;
+    /** Thread-root `message_id` for quoted replies (≠ messageId). */
+    readonly rootId?: string;
     /** Open ids of users @-mentioned in the message (bot excluded by caller). */
     readonly mentions: readonly string[];
 }
@@ -139,6 +143,18 @@ export declare class LarkTransport {
     downloadImage(messageId: string, imageKey: string): Promise<DownloadedImage | undefined>;
     /** Download an inbound file message's bytes by its message id + file key. */
     downloadFile(messageId: string, fileKey: string): Promise<DownloadedFile | undefined>;
+    /**
+     * Fetch one message by id (for reply references). Returns the platform
+     * shape needed by `buildReplyReference`; throws on failure so the caller
+     * maps errors to unavailableReason. Single attempt, bounded by `timeoutMs`.
+     */
+    getMessage(messageId: string, timeoutMs?: number): Promise<{
+        messageId: string;
+        messageType: string;
+        content: Record<string, unknown>;
+        senderId?: string;
+        senderName?: string;
+    }>;
     /** Send a plain text message to a chat. */
     sendText(chatId: string, text: string): Promise<void>;
     /** Send an interactive card; resolves with the created message id. */

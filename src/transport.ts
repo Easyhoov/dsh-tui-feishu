@@ -43,6 +43,10 @@ export interface FeishuMessage {
   readonly imageKey?: string
   /** `file` messages carry the platform file key (download via `downloadFile`). */
   readonly fileKey?: string
+  /** `message_id` this message replies-to/quotes, when present. */
+  readonly parentId?: string
+  /** Thread-root `message_id` for quoted replies (≠ messageId). */
+  readonly rootId?: string
   /** Open ids of users @-mentioned in the message (bot excluded by caller). */
   readonly mentions: readonly string[]
 }
@@ -94,6 +98,31 @@ const TRANSIENT_CODES: ReadonlySet<number> = new Set([
 
 /** Backoff delays between transient retries, in ms. */
 const TRANSIENT_RETRY_DELAYS_MS: readonly number[] = [150, 500, 1000]
+
+/**
+ * Reject when `promise` does not settle within `timeoutMs`. The underlying
+ * work is not cancelled; the loser is simply abandoned (callers that need
+ * cancellation pass their own signal to the SDK).
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label = 'operation'): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const error = new Error(`${label} timed out after ${timeoutMs}ms`) as Error & { code: string }
+      error.code = 'not-delivered'
+      reject(error)
+    }, timeoutMs)
+    promise.then(
+      value => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      error => {
+        clearTimeout(timer)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      },
+    )
+  })
+}
 
 /**
  * Run one Feishu API call with transient-error retry: business codes in the
@@ -178,6 +207,12 @@ export function normalizeMessageEvent(data: RawMessageEvent): FeishuMessage | un
     text,
     ...(imageKey === undefined || imageKey === '' ? {} : { imageKey }),
     ...(fileKey === undefined || fileKey === '' ? {} : { fileKey }),
+    ...((message as { parent_id?: unknown }).parent_id
+      ? { parentId: String((message as { parent_id: unknown }).parent_id) }
+      : {}),
+    ...((message as { root_id?: unknown }).root_id
+      ? { rootId: String((message as { root_id: unknown }).root_id) }
+      : {}),
     mentions: (message.mentions ?? [])
       .map(mention => mention.id?.open_id)
       .filter((id): id is string => id !== undefined && id !== ''),
@@ -490,6 +525,53 @@ export class LarkTransport {
     const bytes = await downloadMessageResource(this.client, messageId, fileKey, 'file', this.logger)
     if (bytes === undefined) return undefined
     return { data: bytes, extension: sniffFileType(bytes) }
+  }
+
+  /**
+   * Fetch one message by id (for reply references). Returns the platform
+   * shape needed by `buildReplyReference`; throws on failure so the caller
+   * maps errors to unavailableReason. Single attempt, bounded by `timeoutMs`.
+   */
+  async getMessage(messageId: string, timeoutMs = 5_000): Promise<{
+    messageId: string
+    messageType: string
+    content: Record<string, unknown>
+    senderId?: string
+    senderName?: string
+  }> {
+    const response = (await withTimeout(
+      this.client.im.v1.message.get({
+        path: { message_id: messageId },
+        params: { with_sender_name: true },
+      } as never),
+      timeoutMs,
+    )) as {
+      items?: Array<{
+        message_id?: string
+        msg_type?: string
+        body?: { content?: string }
+        sender?: { id?: string; sender_type?: string; name?: string }
+      }>
+    }
+    const item = response.items?.[0]
+    if (item === undefined) {
+      const error = new Error(`message ${messageId} not found`) as Error & { code: string }
+      error.code = 'not-found'
+      throw error
+    }
+    let content: Record<string, unknown> = {}
+    try {
+      content = JSON.parse(item.body?.content ?? '{}') as Record<string, unknown>
+    } catch {
+      content = {}
+    }
+    return {
+      messageId: item.message_id ?? messageId,
+      messageType: item.msg_type ?? '',
+      content,
+      ...(item.sender?.id !== undefined ? { senderId: item.sender.id } : {}),
+      ...(item.sender?.name !== undefined ? { senderName: item.sender.name } : {}),
+    }
   }
 
   /** Send a plain text message to a chat. */
