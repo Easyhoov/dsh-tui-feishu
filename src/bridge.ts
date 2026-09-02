@@ -129,6 +129,10 @@ export interface BridgeOptions {
   readonly resolveModelSupportsImages?: (route: { provider: string; model: string }) => Promise<boolean | undefined>
   /** Feature B: deliver images as files for non-visual models (default on). */
   readonly imageFileFallback?: boolean
+  /** Feature C: agent tool to send files back to the chat (default on when sender given). */
+  readonly outboundFiles?: boolean
+  /** Feature C transport: upload + send one file into a chat (absent disables). */
+  readonly sendFileToChat?: (chatId: string, data: Uint8Array, fileName: string) => Promise<void>
   /** Render reasoning/thinking rows on cards (default true). */
   readonly showReasoning?: boolean
 }
@@ -274,10 +278,12 @@ function truncateSummary(text: string): string {
  */
 import { buildReplyReference, replyTag, replyTargetId, unavailableReasonFromError } from './reply-reference.js'
 import type { PlatformMessage, ReplyUnavailableReason } from './reply-reference.js'
+import { installOutboundFileTool } from './outbound-file.js'
 
 export class Bridge {
   private readonly seen = new Set<string>()
   private readonly turns = new Map<string, TurnState>()
+  private outboundFileStatus: string | undefined
   /** Titles of messages queued while a chat's turn was still running. */
   private readonly queuedTurns = new Map<string, string[]>()
   /** Final snapshots per chat, so the detail toggle works on finished cards. */
@@ -595,8 +601,13 @@ export class Bridge {
             '- 危险操作会发 🔐 审批卡片，点 Allow/Reject 放行或拒绝',
             '其他：',
             '- /status - 桥接状态、当前会话、工作目录',
+            '- /repair - 检查配对应用的权限是否齐全（收不到图片/文件时先跑这个）',
           ].join('\n'),
         )
+        break
+      }
+      case 'repair': {
+        await this.handleRepairCommand(chatId)
         break
       }
       default: {
@@ -866,6 +877,53 @@ export class Bridge {
     await this.options.transport.sendText(chatId, `✅ 模型已切换：${provider}/${model}（下一步生效）`)
   }
 
+  /**
+   * `/repair` (Feature D, SPEC §7): probe the paired app's tenant scopes and
+   * report which capabilities are missing with fix instructions. Probes are
+   * single-shot, 5s-bounded, and never throw.
+   */
+  private async handleRepairCommand(chatId: string): Promise<void> {
+    await this.options.transport.sendText(chatId, '🔧 正在检查权限（im:chat / im:resource）……')
+    const rows: string[] = []
+    // im:chat — reading the current chat's metadata.
+    rows.push(
+      (await this.probe('im:chat（会话信息）', () =>
+        this.options.transport.getChat(chatId))) === undefined
+        ? '❌ im:chat（会话信息）—— 不可用'
+        : '✅ im:chat（会话信息）',
+    )
+    // im:resource — downloading an image resource; needs a recent image key,
+    // so probe by calling the transport with a sentinel and classify the error.
+    const resourceOk = await this.probe('im:resource（图片/文件下载）', async () => {
+      // A bogus image key still exercises the scope: a missing-permission
+      // rejection (99991672 family) differs from a not-found.
+      return this.options.transport.probeImageResourceAccess()
+    })
+    rows.push(resourceOk === false ? '❌ im:resource（图片/文件下载）—— 缺权限：图片接收/出站图片不可用' : '✅ im:resource（图片/文件下载）')
+    rows.push('✅ im:message（收消息）—— 你能收到这条回复即说明正常')
+    const missing = rows.some(row => row.startsWith('❌'))
+    await this.options.transport.sendText(
+      chatId,
+      [
+        missing ? '🔧 权限检查结果（有缺失）：' : '🔧 权限检查结果（全部正常）：',
+        ...rows,
+        ...(missing
+          ? ['补全步骤：飞书开发者后台 → 打开配对的应用 → 权限管理 → 申请缺失权限 → 创建版本并发布；发布后重新扫码配对（/feishu pair）。']
+          : []),
+      ].join('\n'),
+    )
+  }
+
+  /** Run one probe, settling to `undefined` on any rejection. */
+  private async probe<T>(label: string, run: () => Promise<T>): Promise<T | undefined> {
+    try {
+      return await run()
+    } catch (error: unknown) {
+      this.options.logger.warn(`repair probe ${label} failed: ${String(error)}`)
+      return undefined
+    }
+  }
+
   /** `/effort` — show the pinned reasoning effort, or set/clear it. */
   private async handleEffortCommand(chatId: string, arg: string): Promise<void> {
     const control = this.options.modelControl
@@ -989,7 +1047,35 @@ export class Bridge {
     await map.persist().catch((error: unknown) => {
       this.options.logger.warn(`session map persist failed: ${String(error)}`)
     })
+    // Feature C (SPEC §6): soft-probe the tools registry once per agent so
+    // the session can send files back to the chat. Never fatal.
+    if (this.options.outboundFiles !== false && this.options.sendFileToChat !== undefined) {
+      const registration = installOutboundFileTool({
+        agentCtx: agent.ctx as { get(key: string): unknown },
+        chatForCurrentSession: () => this.options.sessionMap.chatFor(String(agent.id)),
+        sendFile: async (boundChatId, data, fileName) => {
+          await this.options.sendFileToChat!(boundChatId, data, fileName)
+          return 'sent'
+        },
+      })
+      if (registration.status === 'registered') {
+        this.outboundFileStatus = 'registered'
+        this.options.logger.info(`outbound file tool registered for session ${String(agent.id)}`)
+      } else if (registration.status === 'unavailable') {
+        if (this.outboundFileStatus === undefined) {
+          this.outboundFileStatus = `unavailable: ${registration.reason}`
+          this.options.logger.warn(`outbound files unavailable: ${registration.reason}`)
+        }
+      }
+    } else if (this.outboundFileStatus === undefined) {
+      this.outboundFileStatus = 'disabled'
+    }
     return agent
+  }
+
+  /** /status hook: Feature C availability. */
+  get outboundFilesStatus(): string {
+    return this.outboundFileStatus ?? 'not-probed'
   }
 
   /** Fold one session event into the owning chat's streaming card. */

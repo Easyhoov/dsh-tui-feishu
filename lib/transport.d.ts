@@ -155,6 +155,20 @@ export declare class LarkTransport {
         senderId?: string;
         senderName?: string;
     }>;
+    /**
+     * Fetch the chat's metadata (`im.v1.chats.get`) — `/repair` uses it as the
+     * `im:chat` scope probe.
+     */
+    getChat(chatId: string): Promise<unknown>;
+    /**
+     * Probe whether the app holds `im:resource` by requesting a resource with a
+     * syntactically valid but non-existent key. The scope is present when the
+     * platform answers with a not-found/business error; a permission rejection
+     * (99991672 or HTTP 403 family) means the scope is missing.
+     * Returns: `true` = scope present, `false` = missing, `undefined` = probe
+     * inconclusive (e.g. network failure).
+     */
+    probeImageResourceAccess(): Promise<boolean | undefined>;
     /** Send a plain text message to a chat. */
     sendText(chatId: string, text: string): Promise<void>;
     /** Send an interactive card; resolves with the created message id. */
@@ -168,6 +182,13 @@ export declare class LarkTransport {
      * download-then-upload flow.
      */
     uploadImage(url: string, timeoutMs?: number): Promise<string | undefined>;
+    /**
+     * Upload one file to Feishu (`im.v1.file.create`) and send it as a file
+     * message into `chatId` (Feature C, SPEC §6). Bounded by 30 MB (platform
+     * cap) and the given timeouts; throws on failure so the caller can surface
+     * the error to the agent.
+     */
+    uploadAndSendFile(chatId: string, data: Uint8Array, fileName: string, timeoutMs?: number): Promise<string>;
     /**
      * Create a CardKit card entity from card JSON 2.0; resolves the `card_id`.
      * (CardKit cards stream per-element and are updated via the cardkit APIs,

@@ -82,6 +82,8 @@ export interface Config {
   readonly replyReference?: boolean
   /** Deliver images as files when the model lacks image input (default true). */
   readonly imageFileFallback?: boolean
+  /** Let the agent send workspace files back to the chat (default true). */
+  readonly outboundFiles?: boolean
   /** Card engine: `v1` (message.patch, default) or `cardkit` (CardKit 2.0 typing). */
   readonly cardEngine?: 'v1' | 'cardkit'
   /** Show reasoning/thinking rows on cards (default true). */
@@ -105,6 +107,7 @@ export const Config: z<Config> = z.object({
   receiveFiles: z.boolean().required(false),
   replyReference: z.boolean().required(false),
   imageFileFallback: z.boolean().required(false),
+  outboundFiles: z.boolean().required(false),
   cardEngine: z.union([z.const('v1'), z.const('cardkit')]).required(false),
   showReasoning: z.boolean().required(false),
   allowedUsers: z.array(z.string()).required(false),
@@ -588,6 +591,10 @@ export function apply(ctx: Context, config: Config = {}): void {
       ...(config.showReasoning === undefined ? {} : { showReasoning: config.showReasoning }),
       ...(config.replyReference === undefined ? {} : { replyReference: config.replyReference }),
       ...(config.imageFileFallback === undefined ? {} : { imageFileFallback: config.imageFileFallback }),
+      ...(config.outboundFiles === undefined ? {} : { outboundFiles: config.outboundFiles }),
+      sendFileToChat: async (chatId, data, fileName) => {
+        await transport.uploadAndSendFile(chatId, data, fileName)
+      },
       ...(allowed.length === 0 ? {} : { allowedUsers: allowed }),
       resolveInboundImage,
       resolveInboundFile,

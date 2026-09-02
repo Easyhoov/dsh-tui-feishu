@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.0 (2026-09-02)
+
+### 新增
+- **出站文件回传**（`outboundFiles`，默认开）：agent 可调用新工具
+  `dsh_im_return_file(path, caption?)` 把工作区文件（≤30MB）上传并发回当前
+  飞书聊天。host 未暴露 tools 注册通道时自动降级（/status 与日志标注
+  unavailable），桥不受影响。
+- **`/repair` 权限自检**：探针逐项检查 `im:chat` / `im:resource`，输出
+  ✅/❌ 与补全步骤（开发者后台 → 权限管理 → 发布版本 → 重新配对）。
+  收不到图片/文件时先跑这个，不用再猜权限。
+
+### 工程
+- `transport.uploadAndSendFile()`（`im.v1.files`，30MB 上限）、
+  `transport.getChat()`、`transport.probeImageResourceAccess()`。
+- 新测试 `test/outbound-files.mjs`（6 项）。`npm run verify` 全绿。
+
 ## 0.4.0 (2026-09-02)
 
 ### 新增

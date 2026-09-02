@@ -130,6 +130,10 @@ export interface BridgeOptions {
     }) => Promise<boolean | undefined>;
     /** Feature B: deliver images as files for non-visual models (default on). */
     readonly imageFileFallback?: boolean;
+    /** Feature C: agent tool to send files back to the chat (default on when sender given). */
+    readonly outboundFiles?: boolean;
+    /** Feature C transport: upload + send one file into a chat (absent disables). */
+    readonly sendFileToChat?: (chatId: string, data: Uint8Array, fileName: string) => Promise<void>;
     /** Render reasoning/thinking rows on cards (default true). */
     readonly showReasoning?: boolean;
 }
@@ -139,6 +143,7 @@ export declare class Bridge {
     private readonly options;
     private readonly seen;
     private readonly turns;
+    private outboundFileStatus;
     /** Titles of messages queued while a chat's turn was still running. */
     private readonly queuedTurns;
     /** Final snapshots per chat, so the detail toggle works on finished cards. */
@@ -208,6 +213,14 @@ export declare class Bridge {
     fireReminder(reminder: Reminder): void;
     /** `/model` — show the effective route, or pin a new one for this chat. */
     private handleModelCommand;
+    /**
+     * `/repair` (Feature D, SPEC §7): probe the paired app's tenant scopes and
+     * report which capabilities are missing with fix instructions. Probes are
+     * single-shot, 5s-bounded, and never throw.
+     */
+    private handleRepairCommand;
+    /** Run one probe, settling to `undefined` on any rejection. */
+    private probe;
     /** `/effort` — show the pinned reasoning effort, or set/clear it. */
     private handleEffortCommand;
     /** Resolve (or create) the chat's agent, then deliver one user turn.
@@ -215,6 +228,8 @@ export declare class Bridge {
     private deliver;
     /** Live agent for the chat's bound session, resuming or creating as needed. */
     private ensureAgent;
+    /** /status hook: Feature C availability. */
+    get outboundFilesStatus(): string;
     /** Fold one session event into the owning chat's streaming card. */
     private handleSessionEvent;
     private syncCard;

@@ -1,6 +1,6 @@
 {
   "name": "dsh-tui-feishu",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Feishu (Lark) remote-control surface for dsh-TUI: chat with your local agent from Feishu, scan-to-pair QR setup, streaming reply cards, in-card approvals",
   "type": "module",
   "main": "lib/index.js",
@@ -22,7 +22,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node test/smoke.mjs && node test/redact.mjs && node test/robustness.mjs && node test/cards-p1.mjs && node test/cardkit.mjs && node test/images.mjs && node test/files.mjs && node test/reply.mjs && node test/image-fallback.mjs",
+    "test": "node test/smoke.mjs && node test/redact.mjs && node test/robustness.mjs && node test/cards-p1.mjs && node test/cardkit.mjs && node test/images.mjs && node test/files.mjs && node test/reply.mjs && node test/image-fallback.mjs && node test/outbound-files.mjs",
     "validate:manifest": "node scripts/validate-manifest.mjs",
     "verify": "npm run build && npm run validate:manifest && npm test"
   },

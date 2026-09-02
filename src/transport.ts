@@ -100,6 +100,21 @@ const TRANSIENT_CODES: ReadonlySet<number> = new Set([
 const TRANSIENT_RETRY_DELAYS_MS: readonly number[] = [150, 500, 1000]
 
 /**
+ * Map a file name to the `file_type` enum required by `im.v1.file.create`
+ * (opus/pdf/xls/ppt/mp4/avi/doc/stream).
+ */
+function fileTypeFor(fileName: string): string {
+  const extension = fileName.toLowerCase().split('.').at(-1) ?? ''
+  if (extension === 'doc' || extension === 'docx') return 'doc'
+  if (extension === 'pdf') return 'pdf'
+  if (extension === 'xls' || extension === 'xlsx') return 'xls'
+  if (extension === 'ppt' || extension === 'pptx') return 'ppt'
+  if (extension === 'mp4') return 'mp4'
+  if (extension === 'avi') return 'avi'
+  return 'stream'
+}
+
+/**
  * Reject when `promise` does not settle within `timeoutMs`. The underlying
  * work is not cancelled; the loser is simply abandoned (callers that need
  * cancellation pass their own signal to the SDK).
@@ -574,6 +589,50 @@ export class LarkTransport {
     }
   }
 
+  /**
+   * Fetch the chat's metadata (`im.v1.chats.get`) — `/repair` uses it as the
+   * `im:chat` scope probe.
+   */
+  async getChat(chatId: string): Promise<unknown> {
+    return withTimeout(
+      this.client.im.v1.chat.get({ path: { chat_id: chatId } } as never),
+      5_000,
+      'im.v1.chats.get',
+    )
+  }
+
+  /**
+   * Probe whether the app holds `im:resource` by requesting a resource with a
+   * syntactically valid but non-existent key. The scope is present when the
+   * platform answers with a not-found/business error; a permission rejection
+   * (99991672 or HTTP 403 family) means the scope is missing.
+   * Returns: `true` = scope present, `false` = missing, `undefined` = probe
+   * inconclusive (e.g. network failure).
+   */
+  async probeImageResourceAccess(): Promise<boolean | undefined> {
+    try {
+      await downloadMessageResource(
+        this.client,
+        'om_repair_probe',
+        'img_v3_repair_probe',
+        'image',
+        this.logger,
+      )
+      // Should not happen: the key is fake, so a success would be surprising.
+      return true
+    } catch (error: unknown) {
+      if (error instanceof FeishuApiError) {
+        if (error.code === 99991672 || error.code === 234001 || error.code === 91403) return false
+        // Any other business code means the API itself is reachable with the
+        // right scope (we just asked for a bogus resource).
+        return true
+      }
+      const status = (error as { status?: unknown } | undefined)?.status
+      if (status === 403 || status === 401) return false
+      return undefined
+    }
+  }
+
   /** Send a plain text message to a chat. */
   async sendText(chatId: string, text: string): Promise<void> {
     await this.createMessage(chatId, 'text', JSON.stringify({ text }))
@@ -645,6 +704,43 @@ export class LarkTransport {
       this.logger?.warn(`image upload failed: ${String(error)}`)
       return undefined
     }
+  }
+
+  /**
+   * Upload one file to Feishu (`im.v1.file.create`) and send it as a file
+   * message into `chatId` (Feature C, SPEC §6). Bounded by 30 MB (platform
+   * cap) and the given timeouts; throws on failure so the caller can surface
+   * the error to the agent.
+   */
+  async uploadAndSendFile(
+    chatId: string,
+    data: Uint8Array,
+    fileName: string,
+    timeoutMs = 120_000,
+  ): Promise<string> {
+    if (data.length === 0) throw new Error('file is empty')
+    if (data.length > 30 * 1024 * 1024) throw new Error(`file exceeds the 30 MB platform cap (${data.length} bytes)`)
+    const response = (await withTimeout(
+      this.client.request({
+        method: 'POST',
+        url: '/open-apis/im/v1/files',
+        data: {
+          file_type: fileTypeFor(fileName),
+          file_name: fileName,
+        },
+        files: { file: data },
+      } as never),
+      timeoutMs,
+      'im.v1.file.create',
+    )) as { file_key?: string }
+    const key = response?.file_key
+    if (key === undefined || key === '') throw new Error('file upload returned no file_key')
+    await withTimeout(
+      this.createMessage(chatId, 'file', JSON.stringify({ file_key: key })),
+      15_000,
+      'file message send',
+    )
+    return key
   }
 
   /**
