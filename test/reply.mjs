@@ -3,6 +3,7 @@
  * resolution, reference building per message type, tag escaping, and
  * unavailable-reason mapping.
  */
+import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   cleanString,
@@ -14,57 +15,51 @@ import {
   replyTargetId,
   unavailableReasonFromError,
 } from '../lib/reply-reference.js'
-import { normalizeMessageEvent } from '../lib/transport.js'
+import { FeishuApiError, normalizeMessageEvent } from '../lib/transport.js'
 
-let passed = 0
-const ok = (name, fn) => {
-  fn()
-  passed += 1
-  console.log(`${name}: true`)
-}
 
 // ── sanitizer ──────────────────────────────────────────────────────────
-ok('cleanString strips OSC/CSI/ESC sequences', () => {
+test('cleanString strips OSC/CSI/ESC sequences', () => {
   assert.equal(cleanString('\u001b]0;title\u0007hello', 100).value, 'hello')
   assert.equal(cleanString('\u001b[31mred\u001b[0m', 100).value, 'red')
   // A bare ESC is itself stripped; the following char survives.
   assert.equal(cleanString('\u001bAplain', 100).value, 'plain')
 })
 
-ok('cleanString strips bidi/invisible marks and C0/C1', () => {
+test('cleanString strips bidi/invisible marks and C0/C1', () => {
   assert.equal(cleanString('a\u200bb\u202ec\u202dd\ufeffe', 100).value, 'abcde')
   // C0/C1 controls are replaced with a space, then whitespace folds.
   assert.equal(cleanString('x\u0007y\u001fz\u009fw', 100).value, 'x y z w')
 })
 
-ok('cleanString folds whitespace unless multiline', () => {
+test('cleanString folds whitespace unless multiline', () => {
   assert.equal(cleanString('a  b\n\n  c', 100).value, 'a b c')
   const multi = cleanString('line1\nline2\r\nline3', 100, { multiline: true })
   assert.equal(multi.value, 'line1\nline2\nline3')
   assert.equal(multi.truncated, false)
 })
 
-ok('cleanString truncates by code points (emoji safe)', () => {
+test('cleanString truncates by code points (emoji safe)', () => {
   const cleaned = cleanString('👍'.repeat(10), 5)
   assert.equal([...cleaned.value].length, 5)
   assert.equal(cleaned.truncated, true)
 })
 
-ok('cleanString basename reduces paths', () => {
+test('cleanString basename reduces paths', () => {
   assert.equal(cleanString('/tmp/a\\b/report.xlsx', 100, { basename: true }).value, 'report.xlsx')
 })
 
-ok('cleanString rejects non-strings and empty results', () => {
+test('cleanString rejects non-strings and empty results', () => {
   assert.equal(cleanString(42, 10).value, undefined)
   assert.equal(cleanString('   ', 10).value, undefined)
 })
 
-ok('escapeForTag escapes < > &', () => {
+test('escapeForTag escapes < > &', () => {
   assert.equal(escapeForTag('{"a":"<b>&"}'), '{"a":"\\u003cb\\u003e\\u0026"}')
 })
 
 // ── target resolution ──────────────────────────────────────────────────
-ok('replyTargetId prefers parent_id over root_id', () => {
+test('replyTargetId prefers parent_id over root_id', () => {
   assert.equal(replyTargetId({ messageId: 'om_1', parentId: 'om_p', rootId: 'om_r' }), 'om_p')
   assert.equal(replyTargetId({ messageId: 'om_1', rootId: 'om_1' }), undefined)
   assert.equal(replyTargetId({ messageId: 'om_1', rootId: 'om_root' }), 'om_root')
@@ -72,7 +67,7 @@ ok('replyTargetId prefers parent_id over root_id', () => {
 })
 
 // ── unavailable reasons ────────────────────────────────────────────────
-ok('error mapping covers status codes and pass-through codes', () => {
+test('error mapping covers status codes and pass-through codes', () => {
   assert.equal(unavailableReasonFromError({ status: 403 }), 'permission-denied')
   assert.equal(unavailableReasonFromError({ status: 404 }), 'not-found')
   assert.equal(unavailableReasonFromError({ status: 410 }), 'deleted')
@@ -81,7 +76,7 @@ ok('error mapping covers status codes and pass-through codes', () => {
 })
 
 // ── reference building ─────────────────────────────────────────────────
-ok('builds reference for text message with author', () => {
+test('builds reference for text message with author', () => {
   const ref = buildReplyReference({
     ok: true,
     message: {
@@ -99,7 +94,7 @@ ok('builds reference for text message with author', () => {
   assert.equal(ref.unavailableReason, undefined)
 })
 
-ok('builds reference for file message with basename name', () => {
+test('builds reference for file message with basename name', () => {
   const ref = buildReplyReference({
     ok: true,
     message: {
@@ -112,7 +107,7 @@ ok('builds reference for file message with basename name', () => {
   assert.deepEqual(ref.attachments, [{ kind: 'file', name: 'data.csv' }])
 })
 
-ok('marks interactive cards as unsupported', () => {
+test('marks interactive cards as unsupported', () => {
   const ref = buildReplyReference({
     ok: true,
     message: { messageId: 'om_c', messageType: 'interactive', content: {} },
@@ -120,14 +115,14 @@ ok('marks interactive cards as unsupported', () => {
   assert.equal(ref.unavailableReason, 'unsupported')
 })
 
-ok('lookup failure yields unavailable skeleton, never throws', () => {
+test('lookup failure yields unavailable skeleton, never throws', () => {
   const ref = buildReplyReference({ ok: false, reason: 'permission-denied' })
   assert.equal(ref.unavailableReason, 'permission-denied')
   assert.deepEqual(ref.attachments, [])
 })
 
 // ── transport normalization carries parent/root ids ────────────────────
-ok('normalizeMessageEvent parses parent_id/root_id', () => {
+test('normalizeMessageEvent parses parent_id/root_id', () => {
   const msg = normalizeMessageEvent({
     message: {
       message_id: 'om_2',
@@ -146,7 +141,7 @@ ok('normalizeMessageEvent parses parent_id/root_id', () => {
   assert.equal(msg.rootId, 'om_root1')
 })
 
-ok('normalizeMessageEvent omits absent parent/root', () => {
+test('normalizeMessageEvent omits absent parent/root', () => {
   const msg = normalizeMessageEvent({
     message: {
       message_id: 'om_3',
@@ -162,5 +157,87 @@ ok('normalizeMessageEvent omits absent parent/root', () => {
   assert.equal(msg.parentId, undefined)
   assert.equal(msg.rootId, undefined)
 })
+// ── M1: Feishu numeric business codes (audit-corrected) ────────────────
+test('M1: numeric Feishu business codes map to permission-denied / not-found / deleted', () => {
+  assert.equal(unavailableReasonFromError({ code: 99991672 }), 'permission-denied')
+  assert.equal(unavailableReasonFromError({ code: 230002 }), 'not-found')
+  assert.equal(unavailableReasonFromError({ code: 231003 }), 'deleted')
+  assert.equal(unavailableReasonFromError({ code: 1000023 }), 'not-found')
+})
 
-console.log(`reply: ${passed} passed`)
+test('M1: a real FeishuApiError instance maps by its numeric code', () => {
+  // SDK/business errors surface as FeishuApiError(code): the string-code and
+  // HTTP-status branches alone would misclassify them as not-delivered.
+  assert.equal(unavailableReasonFromError(new FeishuApiError('im.v1.message.get', 99991672, 'no permission')), 'permission-denied')
+  assert.equal(unavailableReasonFromError(new FeishuApiError('im.v1.message.get', 230002, 'not found')), 'not-found')
+  assert.equal(unavailableReasonFromError(new FeishuApiError('im.v1.message.get', 231003, 'deleted')), 'deleted')
+})
+
+test('M1: HTTP statuses and pass-through reason codes still work', () => {
+  assert.equal(unavailableReasonFromError({ status: 401 }), 'permission-denied')
+  assert.equal(unavailableReasonFromError({ statusCode: 410 }), 'deleted')
+  assert.equal(unavailableReasonFromError({ code: 'deleted' }), 'deleted')
+  assert.equal(unavailableReasonFromError({ code: 'not-found' }), 'not-found')
+})
+
+// ── M9: flattenPost across element kinds (SPEC §4.3) ────────────────────
+test('M9: post message flattens paragraphs, links, mentions and counts images', () => {
+  // flattenPost traverses each top-level key's { content: [[element,...],...] }
+  // (the layered rich-text shape the implementation actually handles).
+  const ref = buildReplyReference({
+    ok: true,
+    message: {
+      messageId: 'om_post',
+      messageType: 'post',
+      content: {
+        body: {
+          title: '标题',
+          content: [
+            [{ tag: 'text', text: '你好' }, { tag: 'a', text: { text: ' 链接' } }],
+            [{ tag: 'at', user_id: 'ou_1' }, { tag: 'text', text: ' 在吗' }],
+            [{ tag: 'img', image_key: 'img_1' }],
+            [{ tag: 'img', image_key: 'img_2' }],
+          ],
+        },
+      },
+    },
+  })
+  assert.ok(ref.content?.includes('你好') && ref.content?.includes('链接'), 'text + link text joined')
+  assert.ok(ref.content?.includes('在吗'), 'mention line flattened')
+  assert.deepEqual(ref.attachments, [{ kind: 'image' }, { kind: 'image' }], 'images count as attachments')
+  assert.equal(ref.unavailableReason, undefined)
+  assert.equal(ref.truncated, false)
+})
+
+test('M9: post message with only images yields attachments but no content', () => {
+  const ref = buildReplyReference({
+    ok: true,
+    message: {
+      messageId: 'om_imgpost',
+      messageType: 'post',
+      content: { body: { content: [[{ tag: 'img', image_key: 'img_x' }]] } },
+    },
+  })
+  assert.equal(ref.content, undefined)
+  assert.deepEqual(ref.attachments, [{ kind: 'image' }])
+  assert.equal(ref.unavailableReason, undefined, 'an image-only quote is still usable')
+})
+
+test('M9: unsupported quoted types mark the reference instead of guessing', () => {
+  for (const messageType of ['interactive', 'share_chat', 'share_user']) {
+    const ref = buildReplyReference({ ok: true, message: { messageId: 'om_t', messageType, content: {} } })
+    assert.equal(ref.unavailableReason, 'unsupported', messageType)
+  }
+})
+
+test('M9: image/audio/media/sticker quoted types map to attachment kinds', () => {
+  const image = buildReplyReference({ ok: true, message: { messageId: 'om_i', messageType: 'image', content: { image_key: 'k' } } })
+  assert.deepEqual(image.attachments, [{ kind: 'image' }])
+  assert.equal(image.unavailableReason, undefined)
+  const audio = buildReplyReference({ ok: true, message: { messageId: 'om_a', messageType: 'audio', content: {} } })
+  assert.deepEqual(audio.attachments, [{ kind: 'audio' }])
+  const media = buildReplyReference({ ok: true, message: { messageId: 'om_m', messageType: 'media', content: { file_name: '/d/x.mp4' } } })
+  assert.deepEqual(media.attachments, [{ kind: 'video', name: 'x.mp4' }])
+  const sticker = buildReplyReference({ ok: true, message: { messageId: 'om_s', messageType: 'sticker', content: {} } })
+  assert.deepEqual(sticker.attachments, [{ kind: 'other' }])
+})

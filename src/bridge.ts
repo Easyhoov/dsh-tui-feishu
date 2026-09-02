@@ -20,8 +20,11 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { CardFooter, CardRow, CardSnapshot, CardStatus, CardStream } from './cards.js'
 import { stripReasoningTags } from './cardmd.js'
+import { installOutboundFileTool } from './outbound-file.js'
 import { parseReminderTime, describeReminder, type Reminder, type ReminderStore } from './reminders.js'
 import { redactInlineSecrets, sanitizeToolDetail } from './redact.js'
+import { buildReplyReference, replyTag, replyTargetId, unavailableReasonFromError } from './reply-reference.js'
+import type { PlatformMessage, ReplyUnavailableReason } from './reply-reference.js'
 import { resolveToolDescriptor } from './tools.js'
 import type { FeishuCardAction, FeishuMessage, LarkTransport } from './transport.js'
 import type { SessionMap } from './session-map.js'
@@ -89,6 +92,10 @@ interface HistoryEntry {
 /** Max rows kept per chat and max chars per row for /history. */
 const HISTORY_CAP_PER_CHAT = 50
 const HISTORY_ROW_CHARS = 400
+/** Target max chars per /history message (SPEC §9: send as multiple texts). */
+const HISTORY_MESSAGE_CHARS = 3500
+/** /compact hard cap: a stalled compaction aborts with a clear message. */
+const COMPACTION_TIMEOUT_MS = 120_000
 
 /** A chat's effective model route, for /model status and switching. */
 export interface ChatRoute {
@@ -128,8 +135,14 @@ export interface BridgeOptions {
   readonly resolveImages?: boolean
   /** Deliver inbound Feishu image messages to the agent (default true). */
   readonly receiveImages?: boolean
-  /** Materialize one inbound image (download + attach/save); absent disables image delivery. */
-  readonly resolveInboundImage?: (messageId: string, imageKey: string) => Promise<InboundImageResult | undefined>
+  /** Materialize one inbound image (download + attach/save); absent disables image delivery.
+   *  `preferFile` asks the host to skip the attachment pipeline and save the bytes
+   *  to a workspace file instead (Feature B: the model cannot see images anyway). */
+  readonly resolveInboundImage?: (
+    messageId: string,
+    imageKey: string,
+    preferFile?: boolean,
+  ) => Promise<InboundImageResult | undefined>
   /** Deliver inbound Feishu file messages to the agent (default true). */
   readonly receiveFiles?: boolean
   /** Materialize one inbound file (download + save); absent disables file delivery. */
@@ -142,8 +155,8 @@ export interface BridgeOptions {
   readonly imageFileFallback?: boolean
   /** Feature C: agent tool to send files back to the chat (default on when sender given). */
   readonly outboundFiles?: boolean
-  /** Feature C transport: upload + send one file into a chat (absent disables). */
-  readonly sendFileToChat?: (chatId: string, data: Uint8Array, fileName: string) => Promise<void>
+  /** Feature C transport: upload + send one file into a chat; resolves the sent Feishu message id (absent disables). */
+  readonly sendFileToChat?: (chatId: string, data: Uint8Array, fileName: string) => Promise<string>
   /** Render reasoning/thinking rows on cards (default true). */
   readonly showReasoning?: boolean
 }
@@ -287,17 +300,21 @@ function truncateSummary(text: string): string {
 /**
  * The Feishu↔dsh bridge.
  */
-import { buildReplyReference, replyTag, replyTargetId, unavailableReasonFromError } from './reply-reference.js'
-import type { PlatformMessage, ReplyUnavailableReason } from './reply-reference.js'
-import { installOutboundFileTool } from './outbound-file.js'
-
 export class Bridge {
   private readonly seen = new Set<string>()
   private readonly turns = new Map<string, TurnState>()
-  private outboundFileStatus: string | undefined
+  private outboundFileState: string | undefined
   /** Rolling transcript per chat (Feature F: /history backing store). */
   private readonly history = new Map<string, HistoryEntry[]>()
   private watchdogTimer: ReturnType<typeof setInterval> | undefined
+  /** When the transport first entered a sustained-bad state (watchdog, SPEC §8.1). */
+  private unhealthySince: number | undefined
+  /** Guards against concurrent watchdog restarts (one can take >1 tick on bad networks). */
+  private restartInFlight = false
+  /** Consecutive watchdog-triggered restarts since the connection was last healthy. */
+  private restartCount = 0
+  /** Restart backoff ladder (SPEC §8.1: 250ms→1s→3s→5s→10s→30s, then capped). */
+  private static readonly RESTART_LADDER: readonly number[] = [250, 1_000, 3_000, 5_000, 10_000, 30_000]
   /** Titles of messages queued while a chat's turn was still running. */
   private readonly queuedTurns = new Map<string, string[]>()
   /** Final snapshots per chat, so the detail toggle works on finished cards. */
@@ -305,6 +322,10 @@ export class Bridge {
   private readonly approvals = new Map<string, PendingApproval>()
   private readonly turnDisposers: (() => void)[] = []
   private readonly counters = { received: 0, delivered: 0, dropped: 0 }
+  /** Agent ids whose outbound-file tool registration already ran (Feature C). */
+  private readonly outboundToolsInstalled = new Set<string>()
+  /** Per-agent disposers for the outbound-file tool registration, released on dispose. */
+  private readonly outboundToolDisposers = new Map<string, () => void>()
 
   constructor(private readonly options: BridgeOptions) {}
 
@@ -325,9 +346,9 @@ export class Bridge {
         this.options.logger.error(`card action failed: ${String(error)}`)
       })
     })
-    // Feature E watchdog (SPEC §8): reconnect a long connection that has been
-    // unhealthy or silent for too long, mirroring the reconnect ladder used by
-    // the SDK. Best-effort; never fatal.
+    // Feature E watchdog (SPEC §8): full-restart a long connection that stays
+    // unhealthy (error/reconnecting, or `ready` contradicted by the SDK's raw
+    // socket state). Silence is not unhealthiness. Best-effort; never fatal.
     this.watchdogTimer = setInterval(() => {
       void this.watchdogTick().catch((error: unknown) => {
         this.options.logger.error(`watchdog tick failed: ${String(error)}`)
@@ -338,22 +359,43 @@ export class Bridge {
 
   /** One watchdog pass: full transport restart on prolonged unhealthy state. */
   private async watchdogTick(): Promise<void> {
+    if (this.restartInFlight) return
     const state = this.options.transport.connectionState()
-    const { lastReadyAt, lastInboundAt } = this.options.transport.healthTimestamps()
-    const now = Date.now()
-    const notReadyFor = lastReadyAt === undefined ? Infinity : now - lastReadyAt
-    const silentFor = lastInboundAt === undefined ? Infinity : now - lastInboundAt
-    const unhealthy = state === 'error' || state === 'reconnecting' || notReadyFor > 10 * 60_000
-    if (!unhealthy) return
-    // Only restart when the connection never recovered or no traffic for
-    // 10 min; the lark SDK's own backoff normally recovers sooner.
-    const silentTooLong = silentFor > 10 * 60_000
-    if (state !== 'error' && state !== 'reconnecting' && !silentTooLong) return
-    this.options.logger.warn(
-      `watchdog: connection ${state} (ready ${lastReadyAt ?? 'never'}, inbound ${lastInboundAt ?? 'never'}); restarting long connection`,
-    )
-    await this.options.transport.restart()
-    this.options.logger.info('watchdog: long connection restart issued')
+    // A connection the SDK reports as open is healthy. Inbound silence is
+    // not a failure (a personal bot goes quiet for hours), and `lastReadyAt`
+    // only refreshes on (re)connect, so it can never justify a restart on
+    // its own — a healthy idle connection used to be torn down every 10
+    // minutes. Trust the SDK's live socket state instead: restart on a
+    // sustained error/reconnecting state (SPEC §8.1), or when the bridge
+    // claims `ready` while the raw socket is demonstrably not connected.
+    const liveness = this.options.transport.livenessState?.()
+    const unhealthy =
+      state === 'error' ||
+      state === 'reconnecting' ||
+      (state === 'ready' && liveness !== undefined && liveness !== 'connected')
+    if (!unhealthy) {
+      this.unhealthySince = undefined
+      this.restartCount = 0
+      return
+    }
+    // SPEC §8.1: only restart after the bad state has persisted for 5 min —
+    // the SDK's own autoReconnect backoff usually recovers sooner, and an
+    // early close() invalidates its in-flight reconnect loop.
+    this.unhealthySince ??= Date.now()
+    if (Date.now() - this.unhealthySince < 5 * 60_000) return
+    this.restartInFlight = true
+    try {
+      const delay =
+        Bridge.RESTART_LADDER[Math.min(this.restartCount, Bridge.RESTART_LADDER.length - 1)] ??
+        30_000
+      this.options.logger.warn(
+        `watchdog: connection ${state} (sdk liveness ${liveness ?? 'unknown'}) for ${Math.round((Date.now() - this.unhealthySince) / 1000)}s; restarting long connection (attempt ${this.restartCount + 1}, settle delay ${delay}ms)`,
+      )
+      await this.options.transport.restart(delay)
+      this.restartCount += 1
+    } finally {
+      this.restartInFlight = false
+    }
   }
 
   /** Subscribe to session events (the host owns the actual cordis listener). */
@@ -376,6 +418,9 @@ export class Bridge {
       this.watchdogTimer = undefined
     }
     for (const dispose of this.turnDisposers.splice(0)) dispose()
+    for (const dispose of this.outboundToolDisposers.values()) dispose()
+    this.outboundToolDisposers.clear()
+    this.outboundToolsInstalled.clear()
     for (const pending of this.approvals.values()) {
       if (!pending.settled) pending.resolve('cancelled')
     }
@@ -502,9 +547,14 @@ export class Bridge {
       await this.options.transport.sendText(chatId, '📷 当前未开启图片接收（或宿主不支持）。')
       return
     }
+    // Feature B (SPEC §5): decide the materialization BEFORE resolving — a
+    // non-visual model gets the file saved to the workspace so the delivery
+    // can carry the real path (SPEC §5.1「已保存到 <path>」), instead of
+    // telling the agent to read an attachment that has no path at all.
+    const lacksImage = (await this.modelLacksImageInput(chatId)) === true
     let result: InboundImageResult | undefined
     try {
-      result = await resolve(messageId, imageKey)
+      result = await resolve(messageId, imageKey, lacksImage)
     } catch (error: unknown) {
       this.options.logger.warn(`inbound image resolution failed: ${String(error)}`)
     }
@@ -515,11 +565,11 @@ export class Bridge {
       )
       return
     }
-    // Feature B (SPEC §5): when the chat's effective model cannot take image
-    // input, skip the image block and deliver the saved file as text — the
-    // host would otherwise silently project the image to a placeholder.
-    if (result.kind === 'attachment' && (await this.modelLacksImageInput(chatId)) === true) {
-      this.options.logger.info(`model for ${chatId} lacks image input; re-materializing image as file`)
+    // Defensive fallback: the host ignored `preferFile` and returned an
+    // attachment anyway (older adapter) — degrade to text as before. The
+    // prompt intentionally omits a path: the bridge never saw one.
+    if (result.kind === 'attachment' && lacksImage) {
+      this.options.logger.info(`model for ${chatId} lacks image input; delivering attachment as text`)
       await this.options.transport.sendText(
         chatId,
         '📷 当前模型不支持直接看图——图片已作为文件保存到会话工作区，agent 会用工具读取分析；可 /model 切换视觉模型。',
@@ -574,11 +624,14 @@ export class Bridge {
       case 'status': {
         const binding = this.options.sessionMap.get(chatId)
         const transport = this.options.transport
+        const { lastReadyAt } = transport.healthTimestamps()
         await transport.sendText(
           chatId,
           [
             `🟢 dsh-TUI 飞书桥`,
             `- 连接状态：${transport.connectionState()}`,
+            `- 最近就绪：${lastReadyAt === undefined ? '从未' : new Date(lastReadyAt).toLocaleString()}`,
+            `- 本次进程内重建次数：${this.restartCount}`,
             `- 出站文件：${this.outboundFilesStatus}`,
             `- 当前会话：${binding === undefined ? '还没有（发条消息就开始了）' : binding.sessionId}`,
             `- 工作目录：${binding?.cwd ?? this.options.defaultCwd}`,
@@ -952,20 +1005,36 @@ export class Bridge {
         ? '❌ im:chat（会话信息）—— 不可用'
         : '✅ im:chat（会话信息）',
     )
-    // im:resource — downloading an image resource; needs a recent image key,
-    // so probe by calling the transport with a sentinel and classify the error.
+    // im:resource — downloading an image resource; the probe is three-state
+    // (true / false / undefined): an inconclusive probe (network down) must
+    // surface as ⚠️, never as a green check (SPEC §7.1).
     const resourceOk = await this.probe('im:resource（图片/文件下载）', async () => {
       // A bogus image key still exercises the scope: a missing-permission
       // rejection (99991672 family) differs from a not-found.
       return this.options.transport.probeImageResourceAccess()
     })
-    rows.push(resourceOk === false ? '❌ im:resource（图片/文件下载）—— 缺权限：图片接收/出站图片不可用' : '✅ im:resource（图片/文件下载）')
+    rows.push(
+      resourceOk === false
+        ? '❌ im:resource（图片/文件下载）—— 缺权限：图片接收/出站图片不可用'
+        : resourceOk === true
+          ? '✅ im:resource（图片/文件下载）'
+          : '⚠️ im:resource（图片/文件下载）—— 无法判定（网络异常或探测超时），请重试',
+    )
     rows.push('✅ im:message（收消息）—— 你能收到这条回复即说明正常')
+    // SPEC §7.1 lists four checks; send_as_bot is proven implicitly — the
+    // probe-results message above went out via the bot — but the report
+    // must show it so the user can see it was checked.
+    rows.push('✅ im:message:send_as_bot（发消息）—— 本条检查结果发出即说明正常')
     const missing = rows.some(row => row.startsWith('❌'))
+    const inconclusive = !missing && rows.some(row => row.startsWith('⚠️'))
     await this.options.transport.sendText(
       chatId,
       [
-        missing ? '🔧 权限检查结果（有缺失）：' : '🔧 权限检查结果（全部正常）：',
+        missing
+          ? '🔧 权限检查结果（有缺失）：'
+          : inconclusive
+            ? '🔧 权限检查结果（存在无法判定的项，建议稍后重试）：'
+            : '🔧 权限检查结果（全部正常）：',
         ...rows,
         ...(missing
           ? ['补全步骤：飞书开发者后台 → 打开配对的应用 → 权限管理 → 申请缺失权限 → 创建版本并发布；发布后重新扫码配对（/feishu pair）。']
@@ -984,9 +1053,15 @@ export class Bridge {
     }
   }
 
-  /** Append one transcript row (dedup consecutive identical agent text). */
-  private appendHistory(chatId: string, role: 'user' | 'agent', text: string): void {
-    if (text === '') return
+  /**
+   * Append one transcript row (dedup consecutive identical agent text).
+   * Redacts inline secrets at the entry: the in-memory store holds clean
+   * data, so every present and future consumer (SPEC §9) is safe by
+   * construction instead of relying on each reader remembering to redact.
+   */
+  private appendHistory(chatId: string, role: 'user' | 'agent', rawText: string): void {
+    if (rawText === '') return
+    const text = redactInlineSecrets(rawText)
     const rows = this.history.get(chatId) ?? []
     const last = rows.at(-1)
     if (role === 'agent' && last?.role === 'agent' && last.text === text) return
@@ -1004,21 +1079,44 @@ export class Bridge {
     }
     const want = Number.parseInt(arg.trim(), 10)
     const count = Number.isInteger(want) && want > 0 ? Math.min(want, rows.length) : rows.length
-    const lines = rows.slice(-count).map(row => `${row.role === 'user' ? '🧑' : '🤖'} ${row.text}`)
-    await this.options.transport.sendText(
-      chatId,
-      [`📜 最近 ${count} 条：`, ...lines].join('\n').slice(0, 4000),
-    )
+    // HistoryEntry.at was written but never read: surface it as HH:MM so the
+    // replay carries a usable time alongside role and text.
+    const lines = rows.slice(-count).map(row => {
+      const at = new Date(row.at)
+      const clock = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+      return `${row.role === 'user' ? '🧑' : '🤖'} ${clock} ${row.text}`
+    })
+    // SPEC §9: send as several plain texts instead of one hard-truncated
+    // message — a head-truncation dropped the NEWEST rows, exactly the ones
+    // the user asked for. Pack lines into ≤3500-char chunks, oldest first.
+    const chunks: string[] = []
+    let current = `📜 最近 ${count} 条：`
+    for (const line of lines) {
+      if (current.length > 0 && current.length + 1 + line.length > HISTORY_MESSAGE_CHARS) {
+        chunks.push(current)
+        current = ''
+      }
+      current = current === '' ? line : `${current}\n${line}`
+    }
+    if (current !== '') chunks.push(current)
+    for (const chunk of chunks) await this.options.transport.sendText(chatId, chunk)
   }
 
   /** `/compact` — request a compaction of the current session (soft-probed). */
   private async handleCompactCommand(chatId: string): Promise<void> {
-    const agent = await this.ensureAgent(chatId)
-    if (agent === undefined) return
+    // Pure diagnostics must not create a session (SPEC: keep cancel-signal
+    // semantics and avoid side effects): a running turn or a chat with no
+    // session yet exits before any agent work.
     if (this.turns.has(chatId)) {
       await this.options.transport.sendText(chatId, '⏳ 当前回合还在跑——结束后再压缩。')
       return
     }
+    if (this.options.sessionMap.get(chatId) === undefined) {
+      await this.options.transport.sendText(chatId, '📉 还没有会话——先聊点什么再压缩。')
+      return
+    }
+    const agent = await this.ensureAgent(chatId)
+    if (agent === undefined) return
     let compaction: { compactNow?(agent: unknown, signal: AbortSignal): Promise<boolean | undefined> } | undefined
     try {
       compaction = (agent.ctx as { get(key: string): unknown }).get('compaction') as
@@ -1033,11 +1131,18 @@ export class Bridge {
     }
     await this.options.transport.sendText(chatId, '📉 正在压缩会话……')
     try {
-      const did = await compaction.compactNow(agent, new AbortController().signal)
+      // Hard 120s cap (SPEC principle 3: preserve cancellation semantics) —
+      // a stalled compaction must end with a clear message, not silence.
+      const did = await compaction.compactNow(agent, AbortSignal.timeout(COMPACTION_TIMEOUT_MS))
       await this.options.transport.sendText(chatId, did ? '✅ 会话已压缩。' : 'ℹ️ 没有可压缩的内容。')
     } catch (error: unknown) {
-      this.options.logger.warn(`compaction failed: ${String(error)}`)
-      await this.options.transport.sendText(chatId, `❌ 压缩失败：${String(error)}`)
+      if (error instanceof Error && error.name === 'TimeoutError') {
+        this.options.logger.warn(`compaction timed out after ${COMPACTION_TIMEOUT_MS}ms`)
+        await this.options.transport.sendText(chatId, `⏱ 压缩超时（${COMPACTION_TIMEOUT_MS / 1000} 秒）——会话可能过大，稍后再试。`)
+      } else {
+        this.options.logger.warn(`compaction failed: ${String(error)}`)
+        await this.options.transport.sendText(chatId, `❌ 压缩失败：${String(error)}`)
+      }
     }
   }
 
@@ -1137,12 +1242,17 @@ export class Bridge {
     const binding = map.get(chatId)
     if (binding !== undefined) {
       const live = store.get(binding.sessionId)
-      if (live !== undefined) return live
+      if (live !== undefined) {
+        this.registerOutboundTool(live)
+        return live
+      }
       try {
-        return await store.resume(binding.sessionId, {
+        const resumed = await store.resume(binding.sessionId, {
           ...(binding.route === undefined ? {} : { route: binding.route }),
           ...(binding.effort === undefined ? {} : { effort: binding.effort }),
         })
+        this.registerOutboundTool(resumed)
+        return resumed
       } catch (error: unknown) {
         this.options.logger.warn(
           `resume of session ${binding.sessionId} failed (${String(error)}); rebinding fresh`,
@@ -1164,35 +1274,45 @@ export class Bridge {
     await map.persist().catch((error: unknown) => {
       this.options.logger.warn(`session map persist failed: ${String(error)}`)
     })
-    // Feature C (SPEC §6): soft-probe the tools registry once per agent so
-    // the session can send files back to the chat. Never fatal.
+    this.registerOutboundTool(agent)
+    return agent
+  }
+
+  /**
+   * Feature C (SPEC §6): soft-probe the tools registry once per agent so the
+   * session can send files back to the chat. Runs on EVERY ensureAgent path
+   * (live reuse, resume, create) — a resumed session after a TUI restart
+   * must regain the tool, not silently lose it. Idempotent per agent id;
+   * never fatal.
+   */
+  private registerOutboundTool(agent: Agent): void {
+    const id = String(agent.id)
+    if (this.outboundToolsInstalled.has(id)) return
+    this.outboundToolsInstalled.add(id)
     if (this.options.outboundFiles !== false && this.options.sendFileToChat !== undefined) {
       const registration = installOutboundFileTool({
         agentCtx: agent.ctx as { get(key: string): unknown },
-        chatForCurrentSession: () => this.options.sessionMap.chatFor(String(agent.id)),
-        sendFile: async (boundChatId, data, fileName) => {
-          await this.options.sendFileToChat!(boundChatId, data, fileName)
-          return 'sent'
-        },
+        chatForCurrentSession: () => this.options.sessionMap.chatFor(id),
+        sendFile: async (boundChatId, data, fileName) => this.options.sendFileToChat!(boundChatId, data, fileName),
       })
       if (registration.status === 'registered') {
-        this.outboundFileStatus = 'registered'
-        this.options.logger.info(`outbound file tool registered for session ${String(agent.id)}`)
+        this.outboundFileState = 'registered'
+        if (registration.dispose !== undefined) this.outboundToolDisposers.set(id, registration.dispose)
+        this.options.logger.info(`outbound file tool registered for session ${id}`)
       } else if (registration.status === 'unavailable') {
-        if (this.outboundFileStatus === undefined) {
-          this.outboundFileStatus = `unavailable: ${registration.reason}`
+        if (this.outboundFileState === undefined) {
+          this.outboundFileState = `unavailable: ${registration.reason}`
           this.options.logger.warn(`outbound files unavailable: ${registration.reason}`)
         }
       }
-    } else if (this.outboundFileStatus === undefined) {
-      this.outboundFileStatus = 'disabled'
+    } else if (this.outboundFileState === undefined) {
+      this.outboundFileState = 'disabled'
     }
-    return agent
   }
 
   /** /status hook: Feature C availability. */
   get outboundFilesStatus(): string {
-    return this.outboundFileStatus ?? 'not-probed'
+    return this.outboundFileState ?? 'not-probed'
   }
 
   /** Fold one session event into the owning chat's streaming card. */

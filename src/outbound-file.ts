@@ -5,36 +5,12 @@
  * the registration is skipped and the bridge reports the feature as
  * unavailable in /status.
  */
-import { readFile } from 'node:fs/promises'
-
-/** MIME mapping for common extensions (SPEC §6.3); unknown → octet-stream. */
-const MIME_BY_EXTENSION: ReadonlyMap<string, string> = new Map([
-  ['.csv', 'text/csv'],
-  ['.doc', 'application/msword'],
-  ['.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-  ['.gif', 'image/gif'],
-  ['.html', 'text/html'],
-  ['.jpeg', 'image/jpeg'],
-  ['.jpg', 'image/jpeg'],
-  ['.json', 'application/json'],
-  ['.md', 'text/markdown'],
-  ['.pdf', 'application/pdf'],
-  ['.png', 'image/png'],
-  ['.rar', 'application/vnd.rar'],
-  ['.txt', 'text/plain'],
-  ['.webp', 'image/webp'],
-  ['.xls', 'application/vnd.ms-excel'],
-  ['.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
-  ['.xml', 'application/xml'],
-  ['.zip', 'application/zip'],
-])
-
-export function mimeForFileName(fileName: string): string {
-  return MIME_BY_EXTENSION.get(fileName.toLowerCase().match(/\.[^.]+$/)?.[0] ?? '') ??
-    'application/octet-stream'
-}
+import { readFile, stat } from 'node:fs/promises'
 
 export const OUTBOUND_FILE_TOOL = 'dsh_im_return_file'
+
+/** Platform upload cap (im.v1.file.create); enforced BEFORE reading the file. */
+const MAX_OUTBOUND_BYTES = 30 * 1024 * 1024
 
 /** Structural subset of the dsh `tools` service (soft-probed at runtime). */
 export interface ToolsRegistryLike {
@@ -103,6 +79,25 @@ export function installOutboundFileTool(options: {
         const rawPath = typeof args.path === 'string' ? args.path.trim() : ''
         if (rawPath === '') return { ok: false, error: 'path 不能为空' }
         const fileName = rawPath.replaceAll('\\', '/').split('/').at(-1) ?? 'file'
+        // SPEC §6.3 pre-flight: exists, is a plain file, non-empty, ≤30 MB —
+        // all BEFORE readFile, so a 2 GB path is rejected without being read
+        // into memory and a directory never surfaces as a raw EISDIR error.
+        let info: Awaited<ReturnType<typeof stat>>
+        try {
+          info = await stat(rawPath)
+        } catch (error: unknown) {
+          const reason = (error as { code?: unknown }).code === 'ENOENT'
+            ? '文件不存在'
+            : (error as { code?: unknown }).code === 'EACCES'
+              ? '没有读取权限'
+              : String(error)
+          return { ok: false, error: `无法读取 ${fileName}：${reason}` }
+        }
+        if (!info.isFile()) return { ok: false, error: `${fileName} 不是普通文件（目录/设备无法发送）` }
+        if (info.size === 0) return { ok: false, error: `${fileName} 是空文件` }
+        if (info.size > MAX_OUTBOUND_BYTES) {
+          return { ok: false, error: `${fileName} 超过 30MB 上限（${info.size} 字节）` }
+        }
         let data: Awaited<ReturnType<typeof readFile>>
         try {
           data = await readFile(rawPath)
@@ -116,7 +111,14 @@ export function installOutboundFileTool(options: {
         }
         const chatId = options.chatForCurrentSession()
         if (chatId === undefined) return { ok: false, error: '当前会话没有绑定的飞书聊天（可能不是从飞书发起的回合）' }
-        await options.sendFile(chatId, new Uint8Array(data), fileName)
+        // SPEC §6.3: upload failures surface as a soft, agent-translatable
+        // error — never an exception out of `execute`.
+        let messageId: string
+        try {
+          messageId = await options.sendFile(chatId, new Uint8Array(data), fileName)
+        } catch (error: unknown) {
+          return { ok: false, error: `发送 ${fileName} 失败：${String(error)}` }
+        }
         const caption = typeof args.caption === 'string' && args.caption.trim() !== ''
           ? args.caption.trim()
           : undefined
@@ -124,6 +126,7 @@ export function installOutboundFileTool(options: {
           ok: true,
           file: fileName,
           bytes: data.byteLength,
+          ...(messageId !== '' ? { messageId } : {}),
           message: `文件已发到飞书聊天${caption !== undefined ? `（附言：${caption}）` : ''}`,
         }
       },

@@ -3,6 +3,7 @@
  * durations, code blocks, chunking, locale), and bridge-side reasoning-tag
  * stripping.
  */
+import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { buildCard, StreamingCardManager } from '../lib/cards.js'
 import { Bridge } from '../lib/bridge.js'
@@ -16,53 +17,47 @@ import {
   stripReasoningTags,
 } from '../lib/cardmd.js'
 
-let passed = 0
-const ok = (name, fn) => {
-  fn()
-  passed += 1
-  console.log(`${name}: true`)
-}
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 // ── cardmd ─────────────────────────────────────────────────────────────
-ok('strips think tags and Reasoning prefix', () => {
+test('strips think tags and Reasoning prefix', () => {
   assert.equal(stripReasoningTags('a<think>hidden</think>b'), 'ab')
   assert.equal(stripReasoningTags('Reasoning:\nsecret\n\nanswer'), '')
   assert.equal(stripReasoningTags('<thinking>open tail'), '')
 })
-ok('downgrades overflow tables to code blocks', () => {
+test('downgrades overflow tables to code blocks', () => {
   const text = ['| a | b |', '|---|---|', '| 1 | 2 |'].join('\n')
   assert.equal(downgradeTables(text, 0), `\`\`\`\n${text}\`\`\``)
   assert.equal(downgradeTables(text, 5), text)
 })
-ok('optimizeMarkdown downgrades headings and keeps code blocks', () => {
+test('optimizeMarkdown downgrades headings and keeps code blocks', () => {
   const out = optimizeMarkdown('# Title\n\n## Sub\n\n```js\n# not-a-heading\n```\n')
   assert.ok(out.includes('#### Title'))
   assert.ok(out.includes('##### Sub'))
   assert.ok(out.includes('```js\n# not-a-heading\n```'))
 })
-ok('strips non-img image keys', () => {
+test('strips non-img image keys', () => {
   assert.equal(stripReasoningTags(''), '')
   const out = optimizeMarkdown('![x](https://example.com/a.png) ok ![y](img_v2_abc)')
   assert.ok(!out.includes('https://example.com/a.png'))
   assert.ok(out.includes('img_v2_abc'))
 })
-ok('splits long text at paragraph boundaries', () => {
+test('splits long text at paragraph boundaries', () => {
   const chunks = splitLongText('a'.repeat(100) + '\n\n' + 'b'.repeat(100), 150)
   assert.equal(chunks.length, 2)
   assert.ok(chunks.every(chunk => chunk.length <= 150))
 })
-ok('formats code fences past inner backticks', () => {
+test('formats code fences past inner backticks', () => {
   assert.ok(formatCodeBlock('a`b', 'json').startsWith('```json'))
   assert.ok(formatCodeBlock('a```b', 'json').startsWith('````json'))
 })
-ok('pretty-prints JSON-ish results', () => {
+test('pretty-prints JSON-ish results', () => {
   assert.equal(prettyJsonOrText('{"a":1}').language, 'json')
   assert.equal(prettyJsonOrText('plain').language, 'text')
 })
 
 // ── buildCard rendering ────────────────────────────────────────────────
-ok('footer renders status/elapsed/model on finished cards', () => {
+test('footer renders status/elapsed/model on finished cards', () => {
   const card = buildCard({
     title: 't',
     content: 'answer',
@@ -75,7 +70,7 @@ ok('footer renders status/elapsed/model on finished cards', () => {
   assert.ok(json.includes('deepseek/deepseek-v4'))
   assert.ok(json.includes('✅ 完成'))
 })
-ok('tool row shows humanized title and duration', () => {
+test('tool row shows humanized title and duration', () => {
   const card = buildCard({
     title: 't',
     content: '',
@@ -86,7 +81,7 @@ ok('tool row shows humanized title and duration', () => {
   assert.ok(json.includes('Run command'))
   assert.ok(json.includes('2.5s'))
 })
-ok('expanded tool detail renders fenced result block', () => {
+test('expanded tool detail renders fenced result block', () => {
   const card = buildCard({
     title: 't',
     content: '',
@@ -98,18 +93,18 @@ ok('expanded tool detail renders fenced result block', () => {
   assert.ok(json.includes('```json'))
   assert.ok(json.includes('\\"ok\\": true')) // pretty-printed inside the markdown string
 })
-ok('long bodies split into multiple markdown elements', () => {
+test('long bodies split into multiple markdown elements', () => {
   const card = buildCard({ title: 't', content: 'x'.repeat(3000), rows: [], status: 'done' })
   const elements = card.elements.filter(el => el.tag === 'markdown')
   assert.ok(elements.length >= 2)
 })
-ok('en locale renders English copy', () => {
+test('en locale renders English copy', () => {
   const card = buildCard({ title: 't', content: '', rows: [], status: 'done' }, 'en')
   assert.ok(JSON.stringify(card).includes('✅ Done'))
 })
 
 // ── bridge: reasoning stripped from content; tool durations tracked ────
-ok('bridge strips reasoning tags from answers and tracks tool duration', async () => {
+test('bridge strips reasoning tags from answers and tracks tool duration', async () => {
   const sent = []
   const transport = {
     connectionState: () => 'ready',
@@ -189,7 +184,7 @@ ok('bridge strips reasoning tags from answers and tracks tool duration', async (
 })
 
 // ── bridge: remote images resolved to Feishu keys at turn end ──────────
-ok('bridge resolves remote images to img_keys at turn end', async () => {
+test('bridge resolves remote images to img_keys at turn end', async () => {
   const sent = []
   const transport = {
     connectionState: () => 'ready',
@@ -258,4 +253,3 @@ ok('bridge resolves remote images to img_keys at turn end', async () => {
   cards.dispose()
 })
 
-console.log(`CARDS-P1 OK (${passed} checks)`)

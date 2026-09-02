@@ -138,6 +138,12 @@ export declare class LarkTransport {
         lastReadyAt: number | undefined;
         lastInboundAt: number | undefined;
     };
+    /**
+     * The SDK's live socket state (`WSClient.getConnectionStatus().state`) —
+     * the real liveness evidence for the watchdog. `undefined` before the
+     * underlying client exists (never started).
+     */
+    livenessState(): 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'failed' | undefined;
     /** Connect the long connection and begin delivering events. */
     start(): Promise<void>;
     /** Close the long connection. */
@@ -145,8 +151,9 @@ export declare class LarkTransport {
     /**
      * Full long-connection restart (Feature E watchdog): close the old socket
      * and reconnect from scratch. `start()` may be called again afterwards.
+     * `delayMs` carries the caller's backoff-ladder step before reconnecting.
      */
-    restart(): Promise<void>;
+    restart(delayMs?: number): Promise<void>;
     /** Register the single inbound-message handler. */
     onMessage(handler: (message: FeishuMessage) => void): void;
     /** Register the single card-button handler. */
@@ -161,6 +168,12 @@ export declare class LarkTransport {
      * Fetch one message by id (for reply references). Returns the platform
      * shape needed by `buildReplyReference`; throws on failure so the caller
      * maps errors to unavailableReason. Single attempt, bounded by `timeoutMs`.
+     *
+     * The SDK resolves typed calls to the raw platform body — the envelope
+     * `{code, msg, data}` (the same shape `assertOk` guards). A business error
+     * arrives as HTTP 200 + `code != 0`; it is rethrown as a `FeishuApiError`
+     * carrying the numeric code (SPEC §4.2) instead of being swallowed into a
+     * self-made `not-found`.
      */
     getMessage(messageId: string, timeoutMs?: number): Promise<{
         messageId: string;
@@ -181,6 +194,8 @@ export declare class LarkTransport {
      * (99991672 or HTTP 403 family) means the scope is missing.
      * Returns: `true` = scope present, `false` = missing, `undefined` = probe
      * inconclusive (e.g. network failure).
+     * Single-shot with a hard 5s budget (SPEC §7.1: no retry, ≤5s/probe) —
+     * the diagnostic entry point must never hang ~80s on a dead network.
      */
     probeImageResourceAccess(): Promise<boolean | undefined>;
     /** Send a plain text message to a chat. */
@@ -200,9 +215,14 @@ export declare class LarkTransport {
      * Upload one file to Feishu (`im.v1.file.create`) and send it as a file
      * message into `chatId` (Feature C, SPEC §6). Bounded by 30 MB (platform
      * cap) and the given timeouts; throws on failure so the caller can surface
-     * the error to the agent.
+     * the error to the agent. Resolves the platform `file_key` plus the sent
+     * file message's `message_id` (SPEC §6.3: the tool result carries it so
+     * the agent can confirm delivery).
      */
-    uploadAndSendFile(chatId: string, data: Uint8Array, fileName: string, timeoutMs?: number): Promise<string>;
+    uploadAndSendFile(chatId: string, data: Uint8Array, fileName: string, timeoutMs?: number): Promise<{
+        fileKey: string;
+        messageId: string;
+    }>;
     /**
      * Create a CardKit card entity from card JSON 2.0; resolves the `card_id`.
      * (CardKit cards stream per-element and are updated via the cardkit APIs,

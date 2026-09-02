@@ -115,8 +115,10 @@ export interface BridgeOptions {
     readonly resolveImages?: boolean;
     /** Deliver inbound Feishu image messages to the agent (default true). */
     readonly receiveImages?: boolean;
-    /** Materialize one inbound image (download + attach/save); absent disables image delivery. */
-    readonly resolveInboundImage?: (messageId: string, imageKey: string) => Promise<InboundImageResult | undefined>;
+    /** Materialize one inbound image (download + attach/save); absent disables image delivery.
+     *  `preferFile` asks the host to skip the attachment pipeline and save the bytes
+     *  to a workspace file instead (Feature B: the model cannot see images anyway). */
+    readonly resolveInboundImage?: (messageId: string, imageKey: string, preferFile?: boolean) => Promise<InboundImageResult | undefined>;
     /** Deliver inbound Feishu file messages to the agent (default true). */
     readonly receiveFiles?: boolean;
     /** Materialize one inbound file (download + save); absent disables file delivery. */
@@ -132,21 +134,32 @@ export interface BridgeOptions {
     readonly imageFileFallback?: boolean;
     /** Feature C: agent tool to send files back to the chat (default on when sender given). */
     readonly outboundFiles?: boolean;
-    /** Feature C transport: upload + send one file into a chat (absent disables). */
-    readonly sendFileToChat?: (chatId: string, data: Uint8Array, fileName: string) => Promise<void>;
+    /** Feature C transport: upload + send one file into a chat; resolves the sent Feishu message id (absent disables). */
+    readonly sendFileToChat?: (chatId: string, data: Uint8Array, fileName: string) => Promise<string>;
     /** Render reasoning/thinking rows on cards (default true). */
     readonly showReasoning?: boolean;
 }
 /** One-line summary of a tool call for the activity rows. */
 export declare function toolRowSummary(name: string, argsJson: string): string;
+/**
+ * The Feishu↔dsh bridge.
+ */
 export declare class Bridge {
     private readonly options;
     private readonly seen;
     private readonly turns;
-    private outboundFileStatus;
+    private outboundFileState;
     /** Rolling transcript per chat (Feature F: /history backing store). */
     private readonly history;
     private watchdogTimer;
+    /** When the transport first entered a sustained-bad state (watchdog, SPEC §8.1). */
+    private unhealthySince;
+    /** Guards against concurrent watchdog restarts (one can take >1 tick on bad networks). */
+    private restartInFlight;
+    /** Consecutive watchdog-triggered restarts since the connection was last healthy. */
+    private restartCount;
+    /** Restart backoff ladder (SPEC §8.1: 250ms→1s→3s→5s→10s→30s, then capped). */
+    private static readonly RESTART_LADDER;
     /** Titles of messages queued while a chat's turn was still running. */
     private readonly queuedTurns;
     /** Final snapshots per chat, so the detail toggle works on finished cards. */
@@ -154,6 +167,10 @@ export declare class Bridge {
     private readonly approvals;
     private readonly turnDisposers;
     private readonly counters;
+    /** Agent ids whose outbound-file tool registration already ran (Feature C). */
+    private readonly outboundToolsInstalled;
+    /** Per-agent disposers for the outbound-file tool registration, released on dispose. */
+    private readonly outboundToolDisposers;
     constructor(options: BridgeOptions);
     /** Inbound-message counters for the /feishu status surface. */
     stats(): {
@@ -226,7 +243,12 @@ export declare class Bridge {
     private handleRepairCommand;
     /** Run one probe, settling to `undefined` on any rejection. */
     private probe;
-    /** Append one transcript row (dedup consecutive identical agent text). */
+    /**
+     * Append one transcript row (dedup consecutive identical agent text).
+     * Redacts inline secrets at the entry: the in-memory store holds clean
+     * data, so every present and future consumer (SPEC §9) is safe by
+     * construction instead of relying on each reader remembering to redact.
+     */
     private appendHistory;
     /** `/history [n]` — replay the bounded in-process transcript for this chat. */
     private handleHistoryCommand;
@@ -239,6 +261,14 @@ export declare class Bridge {
     private deliver;
     /** Live agent for the chat's bound session, resuming or creating as needed. */
     private ensureAgent;
+    /**
+     * Feature C (SPEC §6): soft-probe the tools registry once per agent so the
+     * session can send files back to the chat. Runs on EVERY ensureAgent path
+     * (live reuse, resume, create) — a resumed session after a TUI restart
+     * must regain the tool, not silently lose it. Idempotent per agent id;
+     * never fatal.
+     */
+    private registerOutboundTool;
     /** /status hook: Feature C availability. */
     get outboundFilesStatus(): string;
     /** Fold one session event into the owning chat's streaming card. */

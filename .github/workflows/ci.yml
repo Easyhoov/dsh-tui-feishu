@@ -33,6 +33,12 @@ jobs:
       - name: Build (tsc)
         run: npm run build
 
+      # lib/ is committed (npm pack files whitelist): fail the build when the
+      # checked-in output drifted from src/, so a forgotten rebuild can never
+      # ship a package that disagrees with its sources.
+      - name: Guard lib/ drift (committed build output matches src)
+        run: git diff --exit-code lib/
+
       - name: Validate plugin manifest
         run: npm run validate:manifest
 

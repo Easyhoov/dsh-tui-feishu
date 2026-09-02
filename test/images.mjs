@@ -3,22 +3,17 @@
  * bridge's image delivery paths (attachment block, file fallback, disabled,
  * resolver failure).
  */
+import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Bridge } from '../lib/bridge.js'
 import { SessionMap } from '../lib/session-map.js'
 import { StreamingCardManager } from '../lib/cards.js'
 import { normalizeMessageEvent, sniffImageMediaType, asFeishuError } from '../lib/transport.js'
 
-let passed = 0
-const ok = (name, fn) => {
-  fn()
-  passed += 1
-  console.log(`${name}: true`)
-}
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 // ── transport normalization ────────────────────────────────────────────
-ok('normalizes image messages with the image key', () => {
+test('normalizes image messages with the image key', () => {
   const msg = normalizeMessageEvent({
     message: {
       message_id: 'om_1',
@@ -36,7 +31,7 @@ ok('normalizes image messages with the image key', () => {
   assert.equal(msg.text, '')
 })
 
-ok('text messages keep working without an image key', () => {
+test('text messages keep working without an image key', () => {
   const msg = normalizeMessageEvent({
     message: {
       message_id: 'om_2',
@@ -53,7 +48,7 @@ ok('text messages keep working without an image key', () => {
   assert.equal(msg.imageKey, undefined)
 })
 
-ok('unsupported message types are ignored', () => {
+test('unsupported message types are ignored', () => {
   const msg = normalizeMessageEvent({
     message: {
       message_id: 'om_3',
@@ -70,7 +65,7 @@ ok('unsupported message types are ignored', () => {
 })
 
 // ── media-type sniffing ────────────────────────────────────────────────
-ok('sniffs jpeg/png/gif/webp magic bytes', () => {
+test('sniffs jpeg/png/gif/webp magic bytes', () => {
   assert.equal(sniffImageMediaType(new Uint8Array([0xff, 0xd8, 0xff, 0xe0])), 'image/jpeg')
   assert.equal(sniffImageMediaType(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), 'image/png')
   assert.equal(sniffImageMediaType(new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61])), 'image/gif')
@@ -121,7 +116,7 @@ const imageEvent = (id, imageKey) => ({
   mentions: [],
 })
 
-ok('image message delivers an attachment block to the agent', async () => {
+test('image message delivers an attachment block to the agent', async () => {
   let resolvedArgs = undefined
   const { transport, fakeAgent, bridge, cards } = imageBridge({
     resolveInboundImage: async (...args) => {
@@ -134,7 +129,7 @@ ok('image message delivers an attachment block to the agent', async () => {
   })
   await transport._h(imageEvent('img-msg-1', 'img_v3_1'))
   await sleep(20)
-  assert.deepEqual(resolvedArgs, ['img-msg-1', 'img_v3_1'], 'resolver gets (messageId, imageKey)')
+  assert.deepEqual(resolvedArgs, ['img-msg-1', 'img_v3_1', false], 'resolver gets (messageId, imageKey, preferFile=false)')
   const content = fakeAgent.sent.at(-1)?.content ?? []
   assert.ok(Array.isArray(content))
   const image = content.find(block => block.type === 'image')
@@ -145,7 +140,7 @@ ok('image message delivers an attachment block to the agent', async () => {
   cards.dispose()
 })
 
-ok('image message falls back to a file path', async () => {
+test('image message falls back to a file path', async () => {
   const { transport, fakeAgent, bridge, cards } = imageBridge({
     resolveInboundImage: async () => ({ kind: 'file', path: '/data/images/1.png' }),
   })
@@ -158,7 +153,7 @@ ok('image message falls back to a file path', async () => {
   cards.dispose()
 })
 
-ok('receiveImages=false replies instead of delivering', async () => {
+test('receiveImages=false replies instead of delivering', async () => {
   const { transport, fakeAgent, bridge, cards, sessionMap } = imageBridge({
     receiveImages: false,
     resolveInboundImage: async () => ({ kind: 'attachment', ref: { attachmentId: 'a', mediaType: 'image/png', bytes: 1, width: 1, height: 1 } }),
@@ -172,7 +167,7 @@ ok('receiveImages=false replies instead of delivering', async () => {
   cards.dispose()
 })
 
-ok('resolver failure replies with guidance', async () => {
+test('resolver failure replies with guidance', async () => {
   const { transport, fakeAgent, bridge, cards } = imageBridge({
     resolveInboundImage: async () => {
       throw new Error('permission denied')
@@ -186,7 +181,7 @@ ok('resolver failure replies with guidance', async () => {
   cards.dispose()
 })
 
-ok('resolver returning undefined also replies with guidance', async () => {
+test('resolver returning undefined also replies with guidance', async () => {
   const { transport, fakeAgent, bridge, cards } = imageBridge({
     resolveInboundImage: async () => undefined,
   })
@@ -199,7 +194,7 @@ ok('resolver returning undefined also replies with guidance', async () => {
 })
 
 
-ok('asFeishuError decodes binary (Buffer/ArrayBuffer) error bodies', () => {
+test('asFeishuError decodes binary (Buffer/ArrayBuffer) error bodies', () => {
   const body = new TextEncoder().encode(JSON.stringify({ code: 234001, msg: 'Invalid request param.' }))
   const err = { response: { data: body } }
   const folded = asFeishuError('im.v1.message.resource.get', err)
@@ -207,4 +202,3 @@ ok('asFeishuError decodes binary (Buffer/ArrayBuffer) error bodies', () => {
   assert.ok(folded.message.includes('Invalid request param.'))
 })
 
-console.log(`IMAGES OK (${passed} checks)`)

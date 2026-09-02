@@ -3,17 +3,18 @@
  * lacks image input, the attachment path downgrades to a text delivery
  * instead of an image block; visual/unknown models keep the old behavior.
  */
+import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Bridge } from '../lib/bridge.js'
 import { SessionMap } from '../lib/session-map.js'
 import { StreamingCardManager } from '../lib/cards.js'
 
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
-let passed = 0
-const ok = (name, fn) => {
-  fn()
-  passed += 1
-  console.log(`${name}: true`)
+const until = async (cond, ms = 2000) => {
+  const start = Date.now()
+  while (!cond()) {
+    if (Date.now() - start > ms) throw new Error('condition not met within ' + ms + 'ms')
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
 }
 
 function imageBridge(overrides = {}) {
@@ -75,7 +76,7 @@ const lastFollowupHasImage = agent => {
   return JSON.stringify(followup).includes('"type":"image"')
 }
 
-ok('visual model (probe=true) keeps the image attachment block', async () => {
+test('visual model (probe=true) keeps the image attachment block', async () => {
   let probeCalls = 0
   const { transport, fakeAgent } = imageBridge({
     modelControl: modelControlOf({ provider: 'p', model: 'vision' }),
@@ -83,19 +84,19 @@ ok('visual model (probe=true) keeps the image attachment block', async () => {
     resolveInboundImage: async () => attachmentResult(),
   })
   await transport._h(imageEvent())
-  await sleep(20)
+  await until(() => fakeAgent.sent.length > 0)
   assert.equal(lastFollowupHasImage(fakeAgent), true)
   assert.equal(probeCalls, 1)
 })
 
-ok('non-visual model (probe=false) downgrades to text delivery', async () => {
+test('non-visual model (probe=false) downgrades to text delivery', async () => {
   const { transport, fakeAgent, sent } = imageBridge({
     modelControl: modelControlOf({ provider: 'p', model: 'text-only' }),
     resolveModelSupportsImages: async () => false,
     resolveInboundImage: async () => attachmentResult(),
   })
   await transport._h(imageEvent())
-  await sleep(20)
+  await until(() => fakeAgent.sent.length > 0)
   assert.equal(lastFollowupHasImage(fakeAgent), false)
   const followup = JSON.stringify(fakeAgent.sent.at(-1))
   assert.ok(followup.includes('read_image'), 'agent prompt mentions tool reading')
@@ -103,39 +104,39 @@ ok('non-visual model (probe=false) downgrades to text delivery', async () => {
   assert.ok(sent.some(m => m.text.includes('/model')), 'user hint suggests /model')
 })
 
-ok('unknown modalities (probe=undefined) keep the image block (fail open)', async () => {
+test('unknown modalities (probe=undefined) keep the image block (fail open)', async () => {
   const { transport, fakeAgent } = imageBridge({
     modelControl: modelControlOf({ provider: 'p', model: 'mystery' }),
     resolveModelSupportsImages: async () => undefined,
     resolveInboundImage: async () => attachmentResult(),
   })
   await transport._h(imageEvent())
-  await sleep(20)
+  await until(() => fakeAgent.sent.length > 0)
   assert.equal(lastFollowupHasImage(fakeAgent), true)
 })
 
-ok('probe failure keeps the image block (fail open)', async () => {
+test('probe failure keeps the image block (fail open)', async () => {
   const { transport, fakeAgent } = imageBridge({
     modelControl: modelControlOf({ provider: 'p', model: 'mystery' }),
     resolveModelSupportsImages: async () => { throw new Error('rpc down') },
     resolveInboundImage: async () => attachmentResult(),
   })
   await transport._h(imageEvent())
-  await sleep(20)
+  await until(() => fakeAgent.sent.length > 0)
   assert.equal(lastFollowupHasImage(fakeAgent), true)
 })
 
-ok('absent modelControl keeps the image block', async () => {
+test('absent modelControl keeps the image block', async () => {
   const { transport, fakeAgent } = imageBridge({
     resolveModelSupportsImages: async () => false,
     resolveInboundImage: async () => attachmentResult(),
   })
   await transport._h(imageEvent())
-  await sleep(20)
+  await until(() => fakeAgent.sent.length > 0)
   assert.equal(lastFollowupHasImage(fakeAgent), true)
 })
 
-ok('imageFileFallback=false disables the pre-check entirely (0.3.2 behavior)', async () => {
+test('imageFileFallback=false disables the pre-check entirely (0.3.2 behavior)', async () => {
   let probeCalls = 0
   const { transport, fakeAgent } = imageBridge({
     modelControl: modelControlOf({ provider: 'p', model: 'text-only' }),
@@ -144,9 +145,8 @@ ok('imageFileFallback=false disables the pre-check entirely (0.3.2 behavior)', a
     resolveInboundImage: async () => attachmentResult(),
   })
   await transport._h(imageEvent())
-  await sleep(20)
+  await until(() => fakeAgent.sent.length > 0)
   assert.equal(lastFollowupHasImage(fakeAgent), true)
   assert.equal(probeCalls, 0)
 })
 
-console.log(`image-fallback: ${passed} passed`)

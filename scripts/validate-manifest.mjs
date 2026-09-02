@@ -1,18 +1,38 @@
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
-const spec = resolve(root, '..', '..', 'dsh-ecosystem-spec')
+// The Community v0.15 schema + registries live in a sibling checkout of
+// `dsh-ecosystem-spec` (two levels above the repo). Allow pointing at it via
+// DSH_SPEC_DIR; without it the default sibling layout is assumed.
+const spec = resolve(
+  process.env.DSH_SPEC_DIR !== undefined && process.env.DSH_SPEC_DIR !== ''
+    ? process.env.DSH_SPEC_DIR
+    : resolve(root, '..', '..', 'dsh-ecosystem-spec'),
+)
 // Community v0.15 moved the plugin schema into the pinned dsh-std submodule.
 const stdManifest = resolve(spec, 'vendor', 'dsh-std', 'packages', 'manifest')
+const schemaPath = resolve(stdManifest, 'schema', 'dsh-plugin-0.15.schema.json')
+const registryPath = resolve(spec, 'registry', 'registry-0.15.json')
+const permissionPath = resolve(spec, 'registry', 'permissions-0.1.json')
+// Local repos usually lack the sibling checkout; the registry files are all
+// or nothing. Skip (exit 0) with an actionable hint instead of crashing with
+// an ENOENT stack — `npm run verify` is the documented release first step.
+if (!existsSync(schemaPath) || !existsSync(registryPath) || !existsSync(permissionPath)) {
+  console.warn('[validate-manifest] 未找到 dsh-ecosystem-spec 检出，跳过清单校验（不影响构建/测试）。')
+  console.warn(`  期望位置：${spec}`)
+  console.warn('  处理方式：将仓库克隆到与本项目同级（../..）目录；或设置 DSH_SPEC_DIR 指向其根目录。')
+  process.exit(0)
+}
 const load = async path => JSON.parse(await readFile(path, 'utf8'))
 const [manifest, schema, registry, permissionRegistry] = await Promise.all([
   load(resolve(root, 'dsh-plugin.json')),
-  load(resolve(stdManifest, 'schema', 'dsh-plugin-0.15.schema.json')),
-  load(resolve(spec, 'registry', 'registry-0.15.json')),
-  load(resolve(spec, 'registry', 'permissions-0.1.json')),
+  load(schemaPath),
+  load(registryPath),
+  load(permissionPath),
 ])
 
 function resolveRef(rootSchema, ref) {

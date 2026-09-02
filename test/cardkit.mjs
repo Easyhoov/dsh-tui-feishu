@@ -3,6 +3,7 @@
  * streaming mode), the manager's create→stream→close→complete lifecycle,
  * and bridge integration with the CardKit engine.
  */
+import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { buildCardKitStreamingCard, buildCardKitCompleteCard } from '../lib/streaming/cardkit-builder.js'
 import { CardKitStreamingManager } from '../lib/streaming/cardkit-manager.js'
@@ -10,16 +11,10 @@ import { Bridge } from '../lib/bridge.js'
 import { normalizeCardAction } from '../lib/transport.js'
 import { SessionMap } from '../lib/session-map.js'
 
-let passed = 0
-const ok = (name, fn) => {
-  fn()
-  passed += 1
-  console.log(`${name}: true`)
-}
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 // ── builders ───────────────────────────────────────────────────────────
-ok('streaming card is schema 2.0 with streaming mode and a callback Stop button', () => {
+test('streaming card is schema 2.0 with streaming mode and a callback Stop button', () => {
   const card = buildCardKitStreamingCard(
     { title: 't', content: 'hi', rows: [], status: 'working' },
     'zh',
@@ -32,7 +27,7 @@ ok('streaming card is schema 2.0 with streaming mode and a callback Stop button'
   assert.ok(json.includes('"kind":"stop"'))
   assert.ok(card.body.elements.some(el => el.element_id === 'streaming_content'))
 })
-ok('complete card carries panels, footer and a detail callback button', () => {
+test('complete card carries panels, footer and a detail callback button', () => {
   const card = buildCardKitCompleteCard(
     {
       title: 't',
@@ -89,7 +84,7 @@ function fakeCardKitTransport() {
   return transport
 }
 
-ok('manager runs create → add tool panel → stream text → close → complete', async () => {
+test('manager runs create → add tool panel → stream text → close → complete', async () => {
   const transport = fakeCardKitTransport()
   const manager = new CardKitStreamingManager(transport, { throttleMs: 1, logger: { warn() {} } })
   await manager.open('chat', 'hello')
@@ -127,7 +122,7 @@ ok('manager runs create → add tool panel → stream text → close → complet
 })
 
 // ── bridge integration with the CardKit engine ─────────────────────────
-ok('bridge drives the CardKit engine end to end', async () => {
+test('bridge drives the CardKit engine end to end', async () => {
   const transport = fakeCardKitTransport()
   transport.onMessage = h => {
     transport._h = h
@@ -187,7 +182,7 @@ ok('bridge drives the CardKit engine end to end', async () => {
 })
 
 // ── card action callback normalization (v1 and schema-2.0 shapes) ───────
-ok('normalizes both v1 and schema-2.0 card action callbacks', () => {
+test('normalizes both v1 and schema-2.0 card action callbacks', () => {
   const v1 = normalizeCardAction({
     operator: { open_id: 'ou_1' },
     action: { value: { kind: 'stop' } },
@@ -211,7 +206,7 @@ ok('normalizes both v1 and schema-2.0 card action callbacks', () => {
 })
 
 // ── thinking streams into its own element (typing effect) ──────────────
-ok('thinking streams into its own element (typing effect)', async () => {
+test('thinking streams into its own element (typing effect)', async () => {
   const transport = fakeCardKitTransport()
   const manager = new CardKitStreamingManager(transport, { throttleMs: 1, logger: { warn() {} } })
   await manager.open('chat', 't')
@@ -230,7 +225,7 @@ ok('thinking streams into its own element (typing effect)', async () => {
 })
 
 // ── showReasoning=false hides thinking rows ────────────────────────────
-ok('showReasoning=false drops reasoning rows', async () => {
+test('showReasoning=false drops reasoning rows', async () => {
   const transport = fakeCardKitTransport()
   transport.onMessage = h => {
     transport._h = h
@@ -296,7 +291,7 @@ ok('showReasoning=false drops reasoning rows', async () => {
 // the last chunk; finalize's flush was dropped by the `flushing` guard, the
 // terminal snapshot was applied by the NON-terminal branch, streaming mode
 // was never closed, and the card stayed in "working" state forever.
-ok('finalize during an in-flight flush still closes streaming and pushes the terminal card', async () => {
+test('finalize during an in-flight flush still closes streaming and pushes the terminal card', async () => {
   const transport = fakeCardKitTransport()
   // Block the first stream_element so the patch flush is provably in flight
   // when finalize runs.
@@ -349,7 +344,7 @@ ok('finalize during an in-flight flush still closes streaming and pushes the ter
 
 
 // ── long turn: tool panel stays bounded (30 newest + folded history) ────
-ok('long turns fold older tool steps into a bounded history element', () => {
+test('long turns fold older tool steps into a bounded history element', () => {
   const rows = Array.from({ length: 45 }, (_, i) => ({
     kind: 'tool',
     name: 'bash',
@@ -371,4 +366,3 @@ ok('long turns fold older tool steps into a bounded history element', () => {
   assert.equal(fullRows, 30, 'exactly 30 newest steps render as full rows')
 })
 
-console.log(`CARDKIT OK (${passed} checks)`)

@@ -514,11 +514,14 @@ export function apply(ctx: Context, config: Config = {}): void {
     const resolveInboundImage = async (
       messageId: string,
       imageKey: string,
+      preferFile = false,
     ): Promise<InboundImageResult | undefined> => {
       const downloaded = await transport.downloadImage(messageId, imageKey)
       if (downloaded === undefined) return undefined
       const name = `feishu-${imageKey.slice(0, 8)}`
-      if (attachments !== undefined) {
+      // Feature B (SPEC §5.1): the chat's model cannot take image input, so
+      // skip the attachment pipeline entirely and hand the agent a file path.
+      if (!preferFile && attachments !== undefined) {
         try {
           const [ref] = await attachments.saveImages([
             { data: downloaded.data, mediaType: downloaded.mediaType, name },
@@ -593,7 +596,8 @@ export function apply(ctx: Context, config: Config = {}): void {
       ...(config.imageFileFallback === undefined ? {} : { imageFileFallback: config.imageFileFallback }),
       ...(config.outboundFiles === undefined ? {} : { outboundFiles: config.outboundFiles }),
       sendFileToChat: async (chatId, data, fileName) => {
-        await transport.uploadAndSendFile(chatId, data, fileName)
+        const sent = await transport.uploadAndSendFile(chatId, data, fileName)
+        return sent.messageId
       },
       ...(allowed.length === 0 ? {} : { allowedUsers: allowed }),
       resolveInboundImage,

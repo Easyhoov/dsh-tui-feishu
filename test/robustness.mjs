@@ -3,6 +3,7 @@
  * idle-card TTL sweep, plain-text fallback when the card dies, and
  * redaction of tool arguments/results before they reach a card.
  */
+import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Bridge } from '../lib/bridge.js'
 import { SessionMap } from '../lib/session-map.js'
@@ -10,16 +11,10 @@ import { StreamingCardManager } from '../lib/cards.js'
 import { FeishuApiError } from '../lib/transport.js'
 import { isTerminalMessageCode } from '../lib/unavailable.js'
 
-let passed = 0
-const ok = (name, fn) => {
-  fn()
-  passed += 1
-  console.log(`${name}: true`)
-}
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 // ── terminal-code classification ───────────────────────────────────────
-ok('classifies terminal message codes', () => {
+test('classifies terminal message codes', () => {
   assert.ok(isTerminalMessageCode(1000023))
   assert.ok(isTerminalMessageCode(231003))
   assert.ok(isTerminalMessageCode(230011))
@@ -28,7 +23,7 @@ ok('classifies terminal message codes', () => {
 })
 
 // ── dead-card retirement at the manager level ──────────────────────────
-ok('terminal patch failure retires the card and stops patching', async () => {
+test('terminal patch failure retires the card and stops patching', async () => {
   const patches = []
   const transport = {
     connectionState: () => 'ready',
@@ -63,7 +58,7 @@ ok('terminal patch failure retires the card and stops patching', async () => {
 })
 
 // ── idle-card TTL sweep ────────────────────────────────────────────────
-ok('idle card is retired by the TTL sweep', async () => {
+test('idle card is retired by the TTL sweep', async () => {
   const patches = []
   const transport = {
     connectionState: () => 'ready',
@@ -95,7 +90,7 @@ ok('idle card is retired by the TTL sweep', async () => {
 })
 
 // ── bridge-level: secrets never reach a card; dead card falls back to text ─
-ok('tool args/results are redacted on the card and dead cards fall back to text', async () => {
+test('tool args/results are redacted on the card and dead cards fall back to text', async () => {
   const sent = []
   const transport = {
     connectionState: () => 'ready',
@@ -203,4 +198,3 @@ ok('tool args/results are redacted on the card and dead cards fall back to text'
   cards.dispose()
 })
 
-console.log(`ROBUSTNESS OK (${passed} checks)`)

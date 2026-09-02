@@ -1,4 +1,3 @@
-export declare function mimeForFileName(fileName: string): string;
 export declare const OUTBOUND_FILE_TOOL = "dsh_im_return_file";
 /** Structural subset of the dsh `tools` service (soft-probed at runtime). */
 export interface ToolsRegistryLike {

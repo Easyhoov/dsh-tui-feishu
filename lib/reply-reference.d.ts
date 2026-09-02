@@ -32,7 +32,11 @@ export interface PlatformMessage {
     readonly senderId?: string;
     readonly senderName?: string;
 }
-/** Map any lookup error onto a bounded unavailableReason (SPEC §4.2). */
+/**
+ * Map any lookup error onto a bounded unavailableReason (SPEC §4.2).
+ * Recognizes string reason codes, Feishu numeric business codes
+ * (`FeishuApiError.code` and platform error bodies), and HTTP statuses.
+ */
 export declare function unavailableReasonFromError(error: unknown): ReplyUnavailableReason;
 /**
  * Turn a fetched platform message into a sanitized ReplyReference. Failure

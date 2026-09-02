@@ -354,6 +354,9 @@ export function sniffFileType(data: Uint8Array): string {
  * keys with 234001. Needs the `im:resource` permission. Throws
  * `FeishuApiError` on a platform business error; JSON error bodies in binary
  * response mode are decoded so the real code survives.
+ *
+ * `bounded` opts out of the transient-retry loop (SPEC §7.1: diagnostic
+ * probes are single-shot with a 5s budget, no retry ladder).
  */
 async function downloadMessageResource(
   client: Client,
@@ -361,21 +364,26 @@ async function downloadMessageResource(
   fileKey: string,
   resourceType: 'image' | 'file',
   logger: TransportLogger | undefined,
+  bounded?: { readonly timeoutMs: number },
 ): Promise<Uint8Array | undefined> {
   let response
+  const attempt = async (): Promise<unknown> => {
+    try {
+      return await client.request<unknown>({
+        method: 'GET',
+        url: `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(fileKey)}?type=${resourceType}`,
+        responseType: 'arraybuffer',
+        timeout: bounded?.timeoutMs ?? 20_000,
+      })
+    } catch (error: unknown) {
+      throw asFeishuError('im.v1.message.resource.get', error)
+    }
+  }
   try {
-    response = await withTransientRetry(async () => {
-      try {
-        return await client.request<unknown>({
-          method: 'GET',
-          url: `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(fileKey)}?type=${resourceType}`,
-          responseType: 'arraybuffer',
-          timeout: 20_000,
-        })
-      } catch (error: unknown) {
-        throw asFeishuError('im.v1.message.resource.get', error)
-      }
-    })
+    response =
+      bounded === undefined
+        ? await withTransientRetry(attempt)
+        : await withTimeout(attempt(), bounded.timeoutMs, 'im.v1.message.resource.get')
   } catch (error: unknown) {
     throw asFeishuError('im.v1.message.resource.get', error)
   }
@@ -475,20 +483,9 @@ export class LarkTransport {
         this.logger?.info('feishu long connection reconnected')
       },
     })
-  }
-
-  /** The live long-connection state. */
-  connectionState(): 'starting' | 'ready' | 'reconnecting' | 'error' {
-    return this.connectionStateValue
-  }
-
-  /** Watchdog inputs: last ready / last inbound timestamps (ms epoch). */
-  healthTimestamps(): { lastReadyAt: number | undefined; lastInboundAt: number | undefined } {
-    return { lastReadyAt: this.lastReadyAtValue, lastInboundAt: this.lastInboundAtValue }
-  }
-
-  /** Connect the long connection and begin delivering events. */
-  async start(): Promise<void> {
+    // Register event handlers ONCE, here: the dispatcher outlives the socket,
+    // and a second register of the same key (restart() → start()) makes the
+    // SDK log a bogus `handle is registered` error on every reconnect.
     this.dispatcher.register({
       'im.message.receive_v1': data => {
         const message = normalizeMessageEvent(data as RawMessageEvent)
@@ -516,6 +513,29 @@ export class LarkTransport {
         return {}
       },
     })
+  }
+
+  /** The live long-connection state. */
+  connectionState(): 'starting' | 'ready' | 'reconnecting' | 'error' {
+    return this.connectionStateValue
+  }
+
+  /** Watchdog inputs: last ready / last inbound timestamps (ms epoch). */
+  healthTimestamps(): { lastReadyAt: number | undefined; lastInboundAt: number | undefined } {
+    return { lastReadyAt: this.lastReadyAtValue, lastInboundAt: this.lastInboundAtValue }
+  }
+
+  /**
+   * The SDK's live socket state (`WSClient.getConnectionStatus().state`) —
+   * the real liveness evidence for the watchdog. `undefined` before the
+   * underlying client exists (never started).
+   */
+  livenessState(): 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'failed' | undefined {
+    return this.ws.getConnectionStatus()?.state
+  }
+
+  /** Connect the long connection and begin delivering events. */
+  async start(): Promise<void> {
     await this.ws.start({ eventDispatcher: this.dispatcher })
     void this.resolveBotOpenId().catch((error: unknown) => {
       this.logger?.warn(`bot open id resolution failed: ${String(error)}`)
@@ -530,17 +550,24 @@ export class LarkTransport {
   /**
    * Full long-connection restart (Feature E watchdog): close the old socket
    * and reconnect from scratch. `start()` may be called again afterwards.
+   * `delayMs` carries the caller's backoff-ladder step before reconnecting.
    */
-  async restart(): Promise<void> {
+  async restart(delayMs = 250): Promise<void> {
     try {
       this.stop()
     } catch (error: unknown) {
       this.logger?.warn(`watchdog stop failed (continuing): ${String(error)}`)
     }
     this.connectionStateValue = 'reconnecting'
-    // Small settle delay so the socket release lands before reconnect.
-    await new Promise(resolve => setTimeout(resolve, 250))
+    await new Promise(resolve => setTimeout(resolve, delayMs))
     await this.start()
+    // Reconcile with the SDK's raw state: a start() that bailed early (bad
+    // appId, exhausted retries) would otherwise leave the bridge claiming
+    // 'reconnecting' forever — hand the state back to the SDK callbacks'
+    // level when their outcome is already known.
+    const raw = this.ws.getConnectionStatus()
+    if (raw?.state === 'failed') this.connectionStateValue = 'error'
+    else if (raw?.state === 'connected') this.connectionStateValue = 'ready'
   }
 
   /** Register the single inbound-message handler. */
@@ -574,6 +601,12 @@ export class LarkTransport {
    * Fetch one message by id (for reply references). Returns the platform
    * shape needed by `buildReplyReference`; throws on failure so the caller
    * maps errors to unavailableReason. Single attempt, bounded by `timeoutMs`.
+   *
+   * The SDK resolves typed calls to the raw platform body — the envelope
+   * `{code, msg, data}` (the same shape `assertOk` guards). A business error
+   * arrives as HTTP 200 + `code != 0`; it is rethrown as a `FeishuApiError`
+   * carrying the numeric code (SPEC §4.2) instead of being swallowed into a
+   * self-made `not-found`.
    */
   async getMessage(messageId: string, timeoutMs = 5_000): Promise<{
     messageId: string
@@ -589,6 +622,16 @@ export class LarkTransport {
       } as never),
       timeoutMs,
     )) as {
+      code?: number
+      msg?: string
+      data?: {
+        items?: Array<{
+          message_id?: string
+          msg_type?: string
+          body?: { content?: string }
+          sender?: { id?: string; sender_type?: string; name?: string }
+        }>
+      }
       items?: Array<{
         message_id?: string
         msg_type?: string
@@ -596,7 +639,10 @@ export class LarkTransport {
         sender?: { id?: string; sender_type?: string; name?: string }
       }>
     }
-    const item = response.items?.[0]
+    if (response.code !== undefined && response.code !== 0) {
+      throw new FeishuApiError('im.v1.message.get', response.code, response.msg ?? 'message fetch rejected')
+    }
+    const item = (response.data?.items ?? response.items)?.[0]
     if (item === undefined) {
       const error = new Error(`message ${messageId} not found`) as Error & { code: string }
       error.code = 'not-found'
@@ -636,6 +682,8 @@ export class LarkTransport {
    * (99991672 or HTTP 403 family) means the scope is missing.
    * Returns: `true` = scope present, `false` = missing, `undefined` = probe
    * inconclusive (e.g. network failure).
+   * Single-shot with a hard 5s budget (SPEC §7.1: no retry, ≤5s/probe) —
+   * the diagnostic entry point must never hang ~80s on a dead network.
    */
   async probeImageResourceAccess(): Promise<boolean | undefined> {
     try {
@@ -645,6 +693,7 @@ export class LarkTransport {
         'img_v3_repair_probe',
         'image',
         this.logger,
+        { timeoutMs: 5_000 },
       )
       // Should not happen: the key is fake, so a success would be surprising.
       return true
@@ -738,14 +787,16 @@ export class LarkTransport {
    * Upload one file to Feishu (`im.v1.file.create`) and send it as a file
    * message into `chatId` (Feature C, SPEC §6). Bounded by 30 MB (platform
    * cap) and the given timeouts; throws on failure so the caller can surface
-   * the error to the agent.
+   * the error to the agent. Resolves the platform `file_key` plus the sent
+   * file message's `message_id` (SPEC §6.3: the tool result carries it so
+   * the agent can confirm delivery).
    */
   async uploadAndSendFile(
     chatId: string,
     data: Uint8Array,
     fileName: string,
     timeoutMs = 120_000,
-  ): Promise<string> {
+  ): Promise<{ fileKey: string; messageId: string }> {
     if (data.length === 0) throw new Error('file is empty')
     if (data.length > 30 * 1024 * 1024) throw new Error(`file exceeds the 30 MB platform cap (${data.length} bytes)`)
     const response = (await withTimeout(
@@ -763,12 +814,13 @@ export class LarkTransport {
     )) as { file_key?: string }
     const key = response?.file_key
     if (key === undefined || key === '') throw new Error('file upload returned no file_key')
-    await withTimeout(
+    const sent = await withTimeout(
       this.createMessage(chatId, 'file', JSON.stringify({ file_key: key })),
       15_000,
       'file message send',
     )
-    return key
+    const messageId = sent.data?.message_id
+    return { fileKey: key, messageId: messageId ?? '' }
   }
 
   /**

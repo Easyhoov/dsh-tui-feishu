@@ -34,6 +34,11 @@ npm run verify && npm pack
 dsh plugin --profile dsh-tui add file:dsh-tui-feishu-0.3.1.tgz
 ```
 
+> `npm run verify` 的 `validate:manifest` 步骤需要一个同级检出的
+> `dsh-ecosystem-spec` 仓库（放在本仓库 `../..` 目录）。本地没有时该步骤会
+> 打印提示并跳过（不影响构建/测试），或用 `DSH_SPEC_DIR=/path/to/dsh-ecosystem-spec`
+> 显式指定其位置。
+
 > 也可以直接从 [GitHub Releases](https://github.com/Easyhoov/dsh-tui-feishu/releases) 下载最新 tgz。
 
 ## 扫码配对（推荐）

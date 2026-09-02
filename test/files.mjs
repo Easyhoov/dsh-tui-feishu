@@ -2,22 +2,23 @@
  * Inbound file tests: message normalization, file-type sniffing, and the
  * bridge's file delivery paths (save / disabled / failure).
  */
+import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Bridge } from '../lib/bridge.js'
 import { SessionMap } from '../lib/session-map.js'
 import { StreamingCardManager } from '../lib/cards.js'
 import { normalizeMessageEvent, sniffFileType } from '../lib/transport.js'
 
-let passed = 0
-const ok = (name, fn) => {
-  fn()
-  passed += 1
-  console.log(`${name}: true`)
+const until = async (cond, ms = 2000) => {
+  const start = Date.now()
+  while (!cond()) {
+    if (Date.now() - start > ms) throw new Error('condition not met within ' + ms + 'ms')
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
 }
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 // ── transport normalization ────────────────────────────────────────────
-ok('normalizes file messages with the file key', () => {
+test('normalizes file messages with the file key', () => {
   const msg = normalizeMessageEvent({
     message: {
       message_id: 'om_f1',
@@ -35,7 +36,7 @@ ok('normalizes file messages with the file key', () => {
   assert.equal(msg.text, '')
 })
 
-ok('file sniffing covers pdf/zip/ole/gz/text/bin', () => {
+test('file sniffing covers pdf/zip/ole/gz/text/bin', () => {
   assert.equal(sniffFileType(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31])), 'pdf')
   assert.equal(sniffFileType(new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0, 0])), 'zip')
   assert.equal(sniffFileType(new Uint8Array([0x1f, 0x8b, 0x08, 0, 0])), 'gz')
@@ -88,7 +89,7 @@ const fileEvent = (id, fileKey) => ({
   mentions: [],
 })
 
-ok('file message delivers a saved path to the agent', async () => {
+test('file message delivers a saved path to the agent', async () => {
   let resolvedArgs = undefined
   const { transport, fakeAgent, bridge, cards } = fileBridge({
     resolveInboundFile: async (...args) => {
@@ -97,7 +98,7 @@ ok('file message delivers a saved path to the agent', async () => {
     },
   })
   await transport._h(fileEvent('f-msg-1', 'file_v3_1'))
-  await sleep(20)
+  await until(() => fakeAgent.sent.length > 0)
   assert.deepEqual(resolvedArgs, ['f-msg-1', 'file_v3_1'], 'resolver gets (messageId, fileKey)')
   const content = fakeAgent.sent.at(-1)?.content ?? []
   assert.ok(JSON.stringify(content).includes('/data/files/feishu-1.pdf'), 'file path delivered')
@@ -105,13 +106,13 @@ ok('file message delivers a saved path to the agent', async () => {
   cards.dispose()
 })
 
-ok('receiveFiles=false replies instead of delivering', async () => {
+test('receiveFiles=false replies instead of delivering', async () => {
   const { transport, fakeAgent, bridge, cards, sessionMap } = fileBridge({
     receiveFiles: false,
     resolveInboundFile: async () => ({ path: '/data/files/x.pdf' }),
   })
   await transport._h(fileEvent('f-msg-2', 'file_v3_2'))
-  await sleep(20)
+  await until(() => transport.sent.length > 0)
   assert.equal(fakeAgent.sent.length, 0, 'agent untouched')
   assert.ok(transport.sent.some(m => m.text !== undefined && m.text.includes('文件接收')), 'explains files are off')
   assert.equal(sessionMap.get('oc_1'), undefined, 'no session minted for an ignored file')
@@ -119,18 +120,17 @@ ok('receiveFiles=false replies instead of delivering', async () => {
   cards.dispose()
 })
 
-ok('resolver failure replies with guidance', async () => {
+test('resolver failure replies with guidance', async () => {
   const { transport, fakeAgent, bridge, cards } = fileBridge({
     resolveInboundFile: async () => {
       throw new Error('download rejected')
     },
   })
   await transport._h(fileEvent('f-msg-3', 'file_v3_3'))
-  await sleep(20)
+  await until(() => transport.sent.length > 0)
   assert.equal(fakeAgent.sent.length, 0)
   assert.ok(transport.sent.some(m => m.text !== undefined && m.text.includes('文件接收失败')))
   bridge.dispose()
   cards.dispose()
 })
 
-console.log(`FILES OK (${passed} checks)`)
