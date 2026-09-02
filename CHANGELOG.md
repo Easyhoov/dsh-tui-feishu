@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.0 (2026-09-03)
+
+### 审查修复（v0.6.0 代码审查 + 审计核验 → 22 项修复，详见 docs/iteration-2026-09-03-v0.6.0-0.7.0.md）
+
+- **watchdog 行为纠正**：不再因静默重启健康长连接（改用 SDK `ws.getConnectionStatus()`
+  真实存活信号）；error/reconnecting 需持续 5 分钟才重建；重启带 250ms→30s 退避与并发保护。
+- **图片降级给真实路径**：非视觉模型时先落盘再投递「已保存到 <path>」（不再给无路径的读图指令）。
+- **/history 安全与正确性**：转录入口脱敏（密钥不回显飞书）；按条分条发送、保留最新行；行首显示时间。
+- **出站文件边界**：读取前 stat 预检（目录/空文件/超 30MB 中文软错误）；上传失败折软错误并回传
+  飞书 `message_id`；resume/复用会话同样注册 `dsh_im_return_file`。
+- **/repair 三态自检**：探针单发 5s 不重试；网络异常显示 ⚠️ 无法判定而非 ✅；补 send_as_bot 检测行。
+- **引用上下文**：getMessage 按平台信封取数并检查业务码；unavailableReason 识别飞书数字码
+  （缺 scope→permission-denied 等）；错误码集合收敛复用。
+- **杂项**：/status 补最近就绪与重建次数；/compact 无副作用 + 120s 超时提示；dispatcher 注册移入
+  构造（消除重连假 error 日志）；删除死代码 MIME 映射。
+
+### 工程
+- 9 个测试套件迁移 `node:test`（真实计数），新增 watchdog / history / reply-guard 套件，
+  **112 项 node:test + smoke 全绿**。
+- CI 增 `git diff --exit-code lib/` 漂移守卫；`validate:manifest` 缺 spec 时优雅跳过（支持
+  `DSH_SPEC_DIR`）；新增 `.gitattributes`（eol=lf）消除 Windows CRLF 噪声。
+
 ## 0.6.0 (2026-09-02)
 
 ### 新增
