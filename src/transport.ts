@@ -444,6 +444,10 @@ export class LarkTransport {
   private readonly logger: TransportLogger | undefined
   private connectionStateValue: 'starting' | 'ready' | 'reconnecting' | 'error' = 'starting'
   private botOpenIdValue: string | undefined
+  /** When the long connection last became ready (watchdog health input). */
+  private lastReadyAtValue: number | undefined
+  /** When an inbound message/action last arrived (watchdog health input). */
+  private lastInboundAtValue: number | undefined
 
   constructor(credentials: FeishuCredentials, logger?: TransportLogger) {
     this.logger = logger
@@ -454,6 +458,7 @@ export class LarkTransport {
       autoReconnect: true,
       onReady: () => {
         this.connectionStateValue = 'ready'
+        this.lastReadyAtValue = Date.now()
         this.logger?.info('feishu long connection ready')
       },
       onError: (error: Error) => {
@@ -466,6 +471,7 @@ export class LarkTransport {
       },
       onReconnected: () => {
         this.connectionStateValue = 'ready'
+        this.lastReadyAtValue = Date.now()
         this.logger?.info('feishu long connection reconnected')
       },
     })
@@ -476,11 +482,17 @@ export class LarkTransport {
     return this.connectionStateValue
   }
 
+  /** Watchdog inputs: last ready / last inbound timestamps (ms epoch). */
+  healthTimestamps(): { lastReadyAt: number | undefined; lastInboundAt: number | undefined } {
+    return { lastReadyAt: this.lastReadyAtValue, lastInboundAt: this.lastInboundAtValue }
+  }
+
   /** Connect the long connection and begin delivering events. */
   async start(): Promise<void> {
     this.dispatcher.register({
       'im.message.receive_v1': data => {
         const message = normalizeMessageEvent(data as RawMessageEvent)
+        this.lastInboundAtValue = Date.now()
         if (message === undefined) {
           this.logger?.info('feishu event received but not a supported text message (ignored)')
         } else {
@@ -513,6 +525,22 @@ export class LarkTransport {
   /** Close the long connection. */
   stop(): void {
     this.ws.close()
+  }
+
+  /**
+   * Full long-connection restart (Feature E watchdog): close the old socket
+   * and reconnect from scratch. `start()` may be called again afterwards.
+   */
+  async restart(): Promise<void> {
+    try {
+      this.stop()
+    } catch (error: unknown) {
+      this.logger?.warn(`watchdog stop failed (continuing): ${String(error)}`)
+    }
+    this.connectionStateValue = 'reconnecting'
+    // Small settle delay so the socket release lands before reconnect.
+    await new Promise(resolve => setTimeout(resolve, 250))
+    await this.start()
   }
 
   /** Register the single inbound-message handler. */

@@ -1,6 +1,6 @@
 {
   "name": "dsh-tui-feishu",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Feishu (Lark) remote-control surface for dsh-TUI: chat with your local agent from Feishu, scan-to-pair QR setup, streaming reply cards, in-card approvals",
   "type": "module",
   "main": "lib/index.js",

@@ -144,6 +144,9 @@ export declare class Bridge {
     private readonly seen;
     private readonly turns;
     private outboundFileStatus;
+    /** Rolling transcript per chat (Feature F: /history backing store). */
+    private readonly history;
+    private watchdogTimer;
     /** Titles of messages queued while a chat's turn was still running. */
     private readonly queuedTurns;
     /** Final snapshots per chat, so the detail toggle works on finished cards. */
@@ -160,6 +163,8 @@ export declare class Bridge {
     };
     /** Wire transport handlers; call after `transport.start()`. */
     start(): void;
+    /** One watchdog pass: full transport restart on prolonged unhealthy state. */
+    private watchdogTick;
     /** Subscribe to session events (the host owns the actual cordis listener). */
     bindSessionEvents(subscribe: (listener: (sessionId: string, event: SessionEvent) => void) => () => void): void;
     /** Tear the bridge down: settle approvals as cancelled, drop listeners. */
@@ -221,6 +226,12 @@ export declare class Bridge {
     private handleRepairCommand;
     /** Run one probe, settling to `undefined` on any rejection. */
     private probe;
+    /** Append one transcript row (dedup consecutive identical agent text). */
+    private appendHistory;
+    /** `/history [n]` — replay the bounded in-process transcript for this chat. */
+    private handleHistoryCommand;
+    /** `/compact` — request a compaction of the current session (soft-probed). */
+    private handleCompactCommand;
     /** `/effort` — show the pinned reasoning effort, or set/clear it. */
     private handleEffortCommand;
     /** Resolve (or create) the chat's agent, then deliver one user turn.

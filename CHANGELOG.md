@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0 (2026-09-02)
+
+### 新增
+- **`/history [n]`**：回放本聊天最近的对话（进程内滚动保留 50 条，
+  用户/agent 双向，重启清空；`/history 5` 只看最近 5 条）。
+- **`/compact`**：压缩当前会话（软探测宿主 `compaction` 服务，与 TUI
+  同机制）；宿主无压缩服务或回合运行中时给出明确提示。
+- **连接 watchdog**：每 60s 检查长连接健康——error/reconnecting 持续
+  或静默超 10 分钟时自动全量重连长连接（stop→250ms→start），/status
+  同步展示连接状态；dispose 时清理定时器。防"进程活着、桥已死"。
+
+### 工程
+- `transport.healthTimestamps()`/`transport.restart()`；
+  bridge 新增滚动转录、watchdog 循环。`npm run verify` 全绿。
+
 ## 0.5.0 (2026-09-02)
 
 ### 新增

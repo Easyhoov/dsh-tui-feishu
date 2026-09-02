@@ -126,13 +126,27 @@ export declare class LarkTransport {
     private readonly logger;
     private connectionStateValue;
     private botOpenIdValue;
+    /** When the long connection last became ready (watchdog health input). */
+    private lastReadyAtValue;
+    /** When an inbound message/action last arrived (watchdog health input). */
+    private lastInboundAtValue;
     constructor(credentials: FeishuCredentials, logger?: TransportLogger);
     /** The live long-connection state. */
     connectionState(): 'starting' | 'ready' | 'reconnecting' | 'error';
+    /** Watchdog inputs: last ready / last inbound timestamps (ms epoch). */
+    healthTimestamps(): {
+        lastReadyAt: number | undefined;
+        lastInboundAt: number | undefined;
+    };
     /** Connect the long connection and begin delivering events. */
     start(): Promise<void>;
     /** Close the long connection. */
     stop(): void;
+    /**
+     * Full long-connection restart (Feature E watchdog): close the old socket
+     * and reconnect from scratch. `start()` may be called again afterwards.
+     */
+    restart(): Promise<void>;
     /** Register the single inbound-message handler. */
     onMessage(handler: (message: FeishuMessage) => void): void;
     /** Register the single card-button handler. */
