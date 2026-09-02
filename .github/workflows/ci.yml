@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # validate-manifest.mjs resolves the Community v0.15 schema from a
       # sibling `dsh-ecosystem-spec` checkout (two levels above the repo);
@@ -22,7 +22,7 @@ jobs:
           git clone --depth 1 https://github.com/T-Auto/dsh-ecosystem-spec.git "${{ github.workspace }}/../../dsh-ecosystem-spec"
           git -C "${{ github.workspace }}/../../dsh-ecosystem-spec" submodule update --init --depth 1 vendor/dsh-std
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
