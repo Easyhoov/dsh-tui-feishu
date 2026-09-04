@@ -16,7 +16,13 @@
  */
 
 import type { CardFooter, CardRow, CardSnapshot } from '../cards.js'
-import { splitLongText } from '../cardmd.js'
+import {
+  downgradeTables,
+  formatCodeBlock,
+  optimizeMarkdown,
+  prettyJsonOrText,
+  splitLongText,
+} from '../cardmd.js'
 import { t, type CardLocale } from '../i18n.js'
 import { resolveToolDescriptor, toolDisplayTitle } from '../tools.js'
 
@@ -25,6 +31,9 @@ export const KIT_ANSWER_ELEMENT = 'streaming_content'
 export const KIT_TOOL_PANEL_ELEMENT = 'tool_panel'
 export const KIT_REASONING_PANEL_ELEMENT = 'reasoning_panel'
 export const KIT_REASONING_TEXT_ELEMENT = 'reasoning_text'
+
+/** Per-element reasoning budget (streamed and terminal render share it). */
+export const MAX_REASONING_CHARS = 2400
 
 /** The animated loading icon hermes-lark-streaming ships on streaming cards. */
 const LOADING_IMG_KEY = 'img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg'
@@ -98,14 +107,17 @@ function toolStepElements(row: Extract<CardRow, { kind: 'tool' }>, locale: CardL
     })
   }
   if (row.detailOut !== undefined && row.detailOut !== '') {
+    // Bridge captures one semantic payload per step (result xor error);
+    // pretty-print JSON-shaped output and fence past any inner backticks.
     const label = row.status === 'error' ? t('detailError', locale) : t('detailResult', locale)
-    const fence = '```'
+    const { language, text } = prettyJsonOrText(row.detailOut)
+    const body = formatCodeBlock(text, language) || text
     elements.push({
       tag: 'div',
       margin: '0px 0px 0px 22px',
       text: {
         tag: 'lark_md',
-        content: `**${label}**\n${fence}text\n${row.detailOut.slice(0, 800)}\n${fence}`,
+        content: `**${label}**\n${body}`,
         text_size: 'notation',
       },
     })
@@ -189,6 +201,27 @@ function buildToolHistoryElement(
   }
 }
 
+/** Truncate reasoning text to the per-element budget, noting the cut. */
+function truncateReasoning(text: string, locale: CardLocale): string {
+  if (text.length <= MAX_REASONING_CHARS) return text
+  return `${text.slice(0, MAX_REASONING_CHARS)}\n${t('truncated', locale)}`
+}
+
+/**
+ * The reasoning panel's header title from its think rows: "思考中" while a
+ * block is open (no duration stamped yet), then "思考 · 12.3s" once closed
+ * (hermes shows "Thought for …" the same way). Aggregates block durations
+ * because one panel may carry several thinking blocks.
+ */
+export function reasoningPanelTitle(rows: readonly CardRow[], locale: CardLocale): string {
+  const thinkRows = rows.filter((row): row is Extract<CardRow, { kind: 'think' }> => row.kind === 'think')
+  if (thinkRows.length === 0) return `💭 ${t('thinkingPanel', locale)}`
+  if (thinkRows.some(row => row.durationMs === undefined)) return `💭 ${t('thinkingPanel', locale)}`
+  const total = thinkRows.reduce((sum, row) => sum + (row.durationMs ?? 0), 0)
+  if (total > 0) return `💭 ${t('thoughtFor', locale).replace('{}', formatElapsed(total))}`
+  return `💭 ${t('thought', locale)}`
+}
+
 /** Build the reasoning panel element from think rows. */
 export function buildReasoningPanel(
   rows: readonly CardRow[],
@@ -197,15 +230,13 @@ export function buildReasoningPanel(
 ): Record<string, unknown> {
   const thinkRows = rows.filter((row): row is Extract<CardRow, { kind: 'think' }> => row.kind === 'think')
   const text = thinkRows.map(row => row.text).join('\n')
-  // One icon only: the 💭 emoji in the title (no collapsible arrow).
-  const label = thinkRows.length === 0 ? t('thinkingPanel', locale) : t('thought', locale)
   return collapsiblePanel({
-    title: `💭 ${label}`,
+    title: reasoningPanelTitle(rows, locale),
     expanded: options.expanded ?? true,
     elements: [
       {
         tag: 'markdown',
-        content: text.slice(0, 600),
+        content: truncateReasoning(text, locale),
         text_size: 'notation',
         // The inner text element must carry a stable id: the manager streams
         // thinking deltas into it (cardkit cardElement.content by element_id).
@@ -310,7 +341,9 @@ export function buildCardKitCompleteCard(
   if (toolRows.length > 0) {
     elements.push(buildToolPanel(toolRows, locale, { expanded: snapshot.expanded === true }))
   }
-  const body = snapshot.content.trim()
+  // Feishu-render-safe markdown: headings downgraded, excess tables fenced,
+  // invalid image keys stripped, then chunked per element (hermes parity).
+  const body = optimizeMarkdown(downgradeTables(snapshot.content.trim()))
   if (body !== '') {
     for (const chunk of splitLongText(body)) {
       elements.push({ tag: 'markdown', content: chunk, text_size: 'normal_v2' })

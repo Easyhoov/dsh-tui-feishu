@@ -53,7 +53,7 @@
 
 ## 2. 待执行：展示对齐修复方案（对照 hermes_lark_streaming）
 
-### 2.1 [P1] 思考面板标题实时化 + 思考耗时（hermes: `segment_helper.py build_reasoning_finalized_action`）
+### 2.1 [P1] 思考面板标题实时化 + 思考耗时 — ✅ 已实现（v0.9.0）（hermes: `segment_helper.py build_reasoning_finalized_action`）
 
 问题：streaming 期间 reasoning header 一直显示「💭 思考中」；思考结束/进入工具或
 回答时 hermes 会把面板标题更新为「💭 Thought for 12.3s」（含耗时）并在终态卡收起。
@@ -69,7 +69,7 @@
 
 验收：一回合含思考时，飞书端思考结束后标题变为「💭 思考 · 8.4s」；无思考时无面板。
 
-### 2.2 [P1] reasoning 内容上限与分段
+### 2.2 [P1] reasoning 内容上限与分段 — ✅ 已实现（v0.9.0，上限 600→2400 + 截断尾注；多段分段见 2.3）
 
 问题：think 文本 `.slice(0, 600)`（builder 与 manager 各一处），长思考被截断且无提示。
 
@@ -87,7 +87,7 @@ reasoning/tool/answer 交错渲染。
 面板；tool 连续段→tool 面板（每段独立 element_id 供 streaming）。manager 的
 「唯一 reasoning 元素」假设改为按面板元素 id 流式。v1 引擎行文本渲染可保持现状。
 
-### 2.4 [P1] cardkit 路径接入 markdown 优化
+### 2.4 [P1] cardkit 路径接入 markdown 优化 — ✅ 已实现（v0.9.0，stream 与终态统一 optimize+降级表格）
 
 问题：`cardkit-builder.ts` 终态正文只 `splitLongText`；`optimizeMarkdown` /
 `downgradeTables` / `stripInvalidImageKeys`（cardmd.ts 已有，hermes 同源）未接入，
@@ -98,7 +98,7 @@ stream 推送也做（与 hermes `controller.py _do_flush` 一致）。
 
 验收：含 ≥6 张表/`![]` 假图的回答，卡片渲染不破版。
 
-### 2.5 [P1] 代码围栏自适应 + 工具结果块语义化
+### 2.5 [P1] 代码围栏自适应 + 工具结果块语义化 — ✅ 已实现（v0.9.0，error xor result + prettyJson + 自适应围栏）
 
 问题：`toolStepElements` 输出块用固定 ` ```text`（内容含反引号会破块），
 Error/Result 混在一个 `detailOut` 里按状态选一个标签；hermes 用
@@ -126,7 +126,7 @@ Error/Result 混在一个 `detailOut` 里按状态选一个标签；hermes 用
   （hermes `_do_create_card` 只放 loading，随后 add_elements）——观感最接近 hermes，
   但改动面最大，涉及 open()/apply() 结构，放最后。
 
-## 3. 验收与回归
+## 3. 验收与回归（P1 已全绿：npm run verify）
 
 - `npm run verify`（build + manifest + 13 套件）全绿；
 - 真机：配对应用（支持卡片 2.0）私聊触发一回合 → 观察：占位卡 → 工具行/思考

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.0 (2026-09-05)
+
+### CardKit 展示对齐 hermes-lark-streaming（计划 docs/plans/2026-09-05-cardkit-align-fix-plan.md 的 P1）
+
+- **思考面板标题实时化 + 思考耗时**：思考进行中显示「💭 思考中」；思考块结束
+  （进入工具/回答/回合结束）时 manager 用 `partial_update_element` 把面板标题
+  更新为「💭 思考 · 12.3s」；终态卡同样带耗时并默认收起。桥接层给 think 行
+  打 `durationMs`（多段思考聚合展示总耗时）。
+- **思考内容上限 600 → 2400**：流式推送与终态渲染共用同一预算，超限加
+  「…（更多内容略）」尾注，不再静默截断。
+- **CardKit 路径接入 markdown 优化**：正文 stream 与终态卡统一走
+  `optimizeMarkdown(downgradeTables(...))`（标题降级、超 5 表格转代码块、
+  非法 img_key 剥离），与 v1 引擎和 hermes 对齐。
+- **工具结果块语义化 + 围栏自适应**：工具失败只展示错误、成功只展示结果
+  （hermes 语义，不再混拼）；结果块用 `prettyJsonOrText` +
+  `formatCodeBlock`（围栏长度越过内容里最长的反引号串）。
+
 ## 0.8.0 (2026-09-05)
 
 ### 默认引擎切换为 CardKit 2.0 打字机流式

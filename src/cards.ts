@@ -27,7 +27,7 @@ export type CardStatus = 'working' | 'done' | 'stopped' | 'error'
 
 /** One collapsed activity row above the reply body. */
 export type CardRow =
-  | { readonly kind: 'think'; readonly text: string }
+  | { readonly kind: 'think'; readonly text: string; readonly durationMs?: number }
   | {
       readonly kind: 'tool'
       readonly callId?: string

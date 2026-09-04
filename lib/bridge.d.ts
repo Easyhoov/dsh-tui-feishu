@@ -273,6 +273,13 @@ export declare class Bridge {
     get outboundFilesStatus(): string;
     /** Fold one session event into the owning chat's streaming card. */
     private handleSessionEvent;
+    /**
+     * Close the open thinking block: stamp its wall time on the last think row
+     * (the card engines show "思考中" while open and "思考 · Xs" once closed).
+     * Called wherever thinking demonstrably ends (tool call, final message,
+     * turn end). No-op when no thinking block is open.
+     */
+    private finalizeOpenThink;
     private syncCard;
     /**
      * Answerer for the `approval/request` waterfall: requests for the

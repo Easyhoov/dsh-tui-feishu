@@ -21,6 +21,8 @@ export declare const KIT_ANSWER_ELEMENT = "streaming_content";
 export declare const KIT_TOOL_PANEL_ELEMENT = "tool_panel";
 export declare const KIT_REASONING_PANEL_ELEMENT = "reasoning_panel";
 export declare const KIT_REASONING_TEXT_ELEMENT = "reasoning_text";
+/** Per-element reasoning budget (streamed and terminal render share it). */
+export declare const MAX_REASONING_CHARS = 2400;
 /** Build the tool panel element from rows (or the pending placeholder).
  *
  *  Long turns keep the panel bounded: only the newest `MAX_PANEL_STEPS` steps
@@ -32,6 +34,13 @@ export declare function buildToolPanel(rows: readonly CardRow[], locale: CardLoc
     expanded?: boolean;
     elementId?: string;
 }): Record<string, unknown>;
+/**
+ * The reasoning panel's header title from its think rows: "思考中" while a
+ * block is open (no duration stamped yet), then "思考 · 12.3s" once closed
+ * (hermes shows "Thought for …" the same way). Aggregates block durations
+ * because one panel may carry several thinking blocks.
+ */
+export declare function reasoningPanelTitle(rows: readonly CardRow[], locale: CardLocale): string;
 /** Build the reasoning panel element from think rows. */
 export declare function buildReasoningPanel(rows: readonly CardRow[], locale: CardLocale, options?: {
     expanded?: boolean;

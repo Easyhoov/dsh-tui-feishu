@@ -167,6 +167,8 @@ interface TurnState {
   content: string
   rows: CardRow[]
   openThink: boolean
+  /** Epoch ms when the currently open thinking block started (row duration). */
+  thinkStartedAt?: number
   expanded: boolean
   sessionId: string
   /** Epoch ms when the turn's card was opened (footer elapsed). */
@@ -1368,6 +1370,7 @@ export class Bridge {
           if (!state.openThink) {
             state.rows = [...state.rows, { kind: 'think', text: chunk.text }]
             state.openThink = true
+            state.thinkStartedAt = Date.now()
           } else {
             const rows = [...state.rows]
             const index = rows.length - 1
@@ -1383,7 +1386,7 @@ export class Bridge {
       }
       case 'tool/call': {
         if (state === undefined) return
-        state.openThink = false
+        this.finalizeOpenThink(state)
         const args = String(data.arguments ?? '')
         const callId = data.callId === undefined ? undefined : String(data.callId)
         if (callId !== undefined) state.toolStarts.set(callId, Date.now())
@@ -1439,7 +1442,9 @@ export class Bridge {
                 ? data.error
                 : ((data.error as { message?: string } | undefined)?.message ?? '')
             const errorText = redactInlineSecrets(rawError)
-            const detail = [resultText, errorText].filter(part => part !== '').join('\n')
+            // A failed step carries its error (hermes semantics: error xor
+            // result, never both on the card); a clean step carries its result.
+            const detail = error ? errorText : resultText
             let durationMs: number | undefined
             if (row.callId !== undefined) {
               const started = state.toolStarts.get(row.callId)
@@ -1462,7 +1467,7 @@ export class Bridge {
       }
       case 'assistant/message': {
         if (state === undefined) return
-        state.openThink = false
+        this.finalizeOpenThink(state)
         const text = stripReasoningTags(
           assistantText((data.message as { content?: readonly unknown[] } | undefined)?.content),
         )
@@ -1484,7 +1489,7 @@ export class Bridge {
             `turn failed: ${reason.error?.code ?? 'UNKNOWN'}: ${reason.error?.message ?? ''}`,
           )
         }
-        state.openThink = false
+        this.finalizeOpenThink(state)
         const footer: CardFooter | undefined =
           state.startedAt === 0
             ? undefined
@@ -1553,6 +1558,28 @@ export class Bridge {
       }
       default:
         return
+    }
+  }
+
+  /**
+   * Close the open thinking block: stamp its wall time on the last think row
+   * (the card engines show "思考中" while open and "思考 · Xs" once closed).
+   * Called wherever thinking demonstrably ends (tool call, final message,
+   * turn end). No-op when no thinking block is open.
+   */
+  private finalizeOpenThink(state: TurnState): void {
+    if (!state.openThink) return
+    state.openThink = false
+    if (state.thinkStartedAt === undefined) return
+    const durationMs = Date.now() - state.thinkStartedAt
+    delete state.thinkStartedAt
+    if (durationMs <= 0) return
+    const rows = [...state.rows]
+    const index = rows.length - 1
+    const last = rows[index]
+    if (last !== undefined && last.kind === 'think') {
+      rows[index] = { kind: 'think', text: last.text, durationMs }
+      state.rows = rows
     }
   }
 

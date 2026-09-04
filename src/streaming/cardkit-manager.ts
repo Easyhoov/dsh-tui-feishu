@@ -15,6 +15,7 @@
  */
 
 import type { CardFooter, CardRow, CardSnapshot, CardStream } from '../cards.js'
+import { downgradeTables, optimizeMarkdown } from '../cardmd.js'
 import type { CardLocale } from '../i18n.js'
 import type { LarkTransport } from '../transport.js'
 import {
@@ -22,7 +23,10 @@ import {
   buildCardKitStreamingCard,
   buildToolPanel,
   KIT_ANSWER_ELEMENT,
+  KIT_REASONING_PANEL_ELEMENT,
   KIT_REASONING_TEXT_ELEMENT,
+  MAX_REASONING_CHARS,
+  reasoningPanelTitle,
 } from './cardkit-builder.js'
 
 /** One chat's live CardKit card state. */
@@ -33,6 +37,8 @@ interface KitCard {
   /** CardKit sequence counter (must increase per mutation). */
   seq: number
   lastSnapshot: CardSnapshot | null
+  /** The reasoning panel header title last pushed ("思考中" → "思考 · Xs"). */
+  prevReasoningTitle: string
   hasToolPanel: boolean
   pending: CardSnapshot | null
   timer: ReturnType<typeof setTimeout> | null
@@ -122,6 +128,7 @@ export class CardKitStreamingManager implements CardStream {
       messageId,
       seq: 1,
       lastSnapshot: snapshot,
+      prevReasoningTitle: reasoningPanelTitle(snapshot.rows, this.locale),
       // The placeholder card always carries the tool panel (pending state),
       // so the first real tool update patches it in place.
       hasToolPanel: true,
@@ -288,7 +295,6 @@ export class CardKitStreamingManager implements CardStream {
       const toolRows = snapshot.rows.filter(row => row.kind === 'tool')
       const thinkRows = snapshot.rows.filter(row => row.kind === 'think')
       const prevToolRows = previous?.rows.filter(row => row.kind === 'tool') ?? []
-      const prevThinkRows = previous?.rows.filter(row => row.kind === 'think') ?? []
       if (toolRows.length > 0 && rowsKey(toolRows) !== rowsKey(prevToolRows)) {
         const panel = buildToolPanel(toolRows, this.locale)
         if (card.hasToolPanel) {
@@ -299,6 +305,25 @@ export class CardKitStreamingManager implements CardStream {
         } else {
           actions.push(addBeforeAnswer(panel))
           card.hasToolPanel = true
+        }
+      }
+      // Reasoning panels live on every streaming card (showReasoning): patch
+      // their header title in place when a thinking block closes - the title
+      // moves from "思考中" to "思考 · Xs" exactly like hermes does.
+      if (this.showReasoning) {
+        const reasoningTitle = reasoningPanelTitle(snapshot.rows, this.locale)
+        if (reasoningTitle !== card.prevReasoningTitle) {
+          actions.push(partialUpdate(KIT_REASONING_PANEL_ELEMENT, {
+            header: {
+              title: {
+                tag: 'plain_text',
+                content: reasoningTitle,
+                text_color: 'grey',
+                text_size: 'notation',
+              },
+            },
+          }))
+          card.prevReasoningTitle = reasoningTitle
         }
       }
       if (actions.length > 0) {
@@ -314,15 +339,23 @@ export class CardKitStreamingManager implements CardStream {
       // Once the platform closes streaming (idle timeout / already closed),
       // every stream call fails: remember it and stop trying - the content
       // still lands in the terminal full update.
-      if (this.showReasoning && thinkRows.length > 0 && rowsKey(thinkRows) !== rowsKey(prevThinkRows)) {
-        if (!card.streamClosed) {
-          const text = thinkRows.map(row => row.text).join('\n').slice(0, 600) || ' '
-          card.seq += 1
-          try {
-            await this.transport.cardkitStreamElement(card.cardId, KIT_REASONING_TEXT_ELEMENT, text, card.seq)
-          } catch (error: unknown) {
-            if (this.isStreamClosedError(error)) card.streamClosed = true
-            this.logger.warn(`thinking stream failed (continuing): ${String(error)}`)
+      if (this.showReasoning && thinkRows.length > 0) {
+        const thinkText = thinkRows.map(row => row.text).join('\n')
+        const prevThinkText = (previous?.rows ?? [])
+          .filter((row): row is Extract<CardRow, { kind: 'think' }> => row.kind === 'think')
+          .map(row => row.text)
+          .join('\n')
+        // Stream on text change only (duration stamps change rows but not text).
+        if (thinkText !== '' && thinkText !== prevThinkText) {
+          if (!card.streamClosed) {
+            const text = optimizeMarkdown(thinkText).slice(0, MAX_REASONING_CHARS) || ' '
+            card.seq += 1
+            try {
+              await this.transport.cardkitStreamElement(card.cardId, KIT_REASONING_TEXT_ELEMENT, text, card.seq)
+            } catch (error: unknown) {
+              if (this.isStreamClosedError(error)) card.streamClosed = true
+              this.logger.warn(`thinking stream failed (continuing): ${String(error)}`)
+            }
           }
         }
       }
@@ -333,7 +366,7 @@ export class CardKitStreamingManager implements CardStream {
             await this.transport.cardkitStreamElement(
               card.cardId,
               KIT_ANSWER_ELEMENT,
-              snapshot.content || ' ',
+              optimizeMarkdown(downgradeTables(snapshot.content)) || ' ',
               card.seq,
             )
           } catch (error: unknown) {
