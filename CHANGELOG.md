@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.0 (2026-09-05)
+
+### 默认引擎切换为 CardKit 2.0 打字机流式
+
+- **`cardEngine` 默认值从 `v1` 改为 `cardkit`**：未配置时使用卡片 JSON 2.0
+  打字机流式引擎（`cardkit_create` → 面板结构 `batch_update` → 单元素
+  `stream_element` 打字机 → `close_streaming` + 终态全量卡）。需要应用支持
+  卡片 2.0 流式——「扫码一键创建」的应用默认支持；旧应用不支持时显式配置
+  `cardEngine: 'v1'` 回退到 `message.patch` 引擎（README 与 profile patch
+  注释已写明）。
+- 引擎选择仍只在 bridge 启动时读取一次（`src/index.ts`），运行中不受影响；
+  v1 引擎路径与行为完全不变。
+
 ## 0.7.0 (2026-09-03)
 
 ### 审查修复（v0.6.0 代码审查 + 审计核验 → 22 项修复，详见 docs/iteration-2026-09-03-v0.6.0-0.7.0.md）

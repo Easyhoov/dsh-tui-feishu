@@ -54,8 +54,8 @@ export interface Config {
     readonly imageFileFallback?: boolean;
     /** Let the agent send workspace files back to the chat (default true). */
     readonly outboundFiles?: boolean;
-    /** Card engine: `v1` (message.patch, default) or `cardkit` (CardKit 2.0 typing). */
-    readonly cardEngine?: 'v1' | 'cardkit';
+    /** Card engine: `cardkit` (CardKit 2.0 typing, default) or `v1` (message.patch). */
+    readonly cardEngine?: 'cardkit' | 'v1';
     /** Show reasoning/thinking rows on cards (default true). */
     readonly showReasoning?: boolean;
     /** Allowed Feishu sender open ids; empty serves every p2p sender. */

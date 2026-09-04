@@ -87,13 +87,15 @@ TUI 里：
 审批卡片 <── Allow/Reject 按钮 ── approval/request 瀑布（只接自己的 agent）
 ```
 
-卡片引擎二选一（`cardEngine` 配置）：
+卡片引擎二选一（`cardEngine` 配置，默认 `cardkit`）：
 
-- **`v1`（默认）**：`im.v1.message.patch` 全卡节流合并更新——兼容性最好
-- **`cardkit`**：卡片 JSON 2.0 打字机流式——`cardkit_create` 建实体 →
+- **`cardkit`（默认）**：卡片 JSON 2.0 打字机流式——`cardkit_create` 建实体 →
   `batch_update` 面板结构更新 → `stream_element` 单元素打字机 → 完成时
   `close_streaming` + 全量终态卡；按钮经 `behaviors[].type=callback` 触发与
-  v1 相同的 `card.action.trigger` 回调（已对照官方文档并真机验证）
+  v1 相同的 `card.action.trigger` 回调（已对照官方文档并真机验证）。需要
+  应用支持卡片 2.0 流式（「扫码一键创建」的应用默认支持；旧应用不支持时
+  显式配置 `cardEngine: 'v1'` 回退）
+- **`v1`**：`im.v1.message.patch` 全卡节流合并更新——兼容性兜底
 
 - `src/transport.ts` — Lark 传输层（`WSClient` 长连接 + `Client` REST + `registerApp` 扫码配对 + CardKit API）
 - `src/bridge.ts` — 编排：消息→会话投递、session 事件→卡片折叠、审批/停止/详情/会话切换按钮路由、白名单
@@ -129,7 +131,7 @@ TUI 里：
 | `replyReference` | 引用/回复消息时拉取被引用内容，以 `<dsh_im_reply_to>` 注入回合（清洗+防注入+失败不阻断） | `true` |
 | `imageFileFallback` | 当前模型不支持图片输入时，图片自动降级为落盘+工具识图指引（fail-open） | `true` |
 | `outboundFiles` | 允许 agent 用 `dsh_im_return_file` 把文件发回聊天（host 无 tools 注册时自动降级） | `true` |
-| `cardEngine` | 卡片引擎：`v1`（message.patch，默认）或 `cardkit`（CardKit 2.0 打字机流式，需应用支持卡片 2.0） | `v1` |
+| `cardEngine` | 卡片引擎：`cardkit`（CardKit 2.0 打字机流式，默认；需应用支持卡片 2.0）或 `v1`（message.patch 兼容兜底） | `cardkit` |
 | `showReasoning` | 是否在卡片上展示思考过程行 | `true` |
 | `allowedUsers` | 允许的 sender open_id 白名单 | 扫码创建者 |
 
