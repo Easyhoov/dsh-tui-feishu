@@ -38,6 +38,7 @@ import z from '@deepseek-ai/schemastery'
 import { Bridge, type AgentStore, type InboundFileResult, type InboundImageResult, type ModelControl, type SessionPrefs } from './bridge.js'
 import { StreamingCardManager, type CardStream } from './cards.js'
 import { CardKitStreamingManager } from './streaming/cardkit-manager.js'
+import { FallbackCardStream } from './streaming/fallback-card-stream.js'
 import { ReminderStore } from './reminders.js'
 import {
   dataFiles,
@@ -86,6 +87,10 @@ export interface Config {
   readonly outboundFiles?: boolean
   /** Card engine: `cardkit` (CardKit 2.0 typing, default) or `v1` (message.patch). */
   readonly cardEngine?: 'cardkit' | 'v1'
+  /** Auto-downgrade to the v1 engine once when the first CardKit turn card is
+   *  rejected with a business error (apps without card JSON 2.0 support).
+   *  Default true; false keeps the plain-text fail-safe instead. */
+  readonly cardEngineFallback?: boolean
   /** Show reasoning/thinking rows on cards (default true). */
   readonly showReasoning?: boolean
   /** Allowed Feishu sender open ids; empty serves every p2p sender. */
@@ -109,6 +114,7 @@ export const Config: z<Config> = z.object({
   imageFileFallback: z.boolean().required(false),
   outboundFiles: z.boolean().required(false),
   cardEngine: z.union([z.const('v1'), z.const('cardkit')]).required(false),
+  cardEngineFallback: z.boolean().required(false),
   showReasoning: z.boolean().required(false),
   allowedUsers: z.array(z.string()).required(false),
 })
@@ -404,13 +410,25 @@ export function apply(ctx: Context, config: Config = {}): void {
       ...(config.locale === undefined ? {} : { locale: config.locale }),
       logger,
     }
-    const cards: CardStream =
+    const baseCards: CardStream =
       (config.cardEngine ?? 'cardkit') === 'cardkit'
         ? new CardKitStreamingManager(transport, {
             ...baseCardOptions,
             ...(config.showReasoning === undefined ? {} : { showReasoning: config.showReasoning }),
           })
         : new StreamingCardManager(transport, baseCardOptions)
+    // Plan §2.6: default cardkit + no-capability old apps → first turn card
+    // is rejected with a business error. Downgrade that bridge once to v1
+    // (instead of the whole turn degrading to plain text); the swap is
+    // logged and every later call follows the surviving engine.
+    const cards: CardStream =
+      (config.cardEngine ?? 'cardkit') !== 'cardkit' || config.cardEngineFallback === false
+        ? baseCards
+        : new FallbackCardStream({
+            primary: baseCards,
+            fallback: () => new StreamingCardManager(transport, baseCardOptions),
+            logger,
+          })
     const sessionMap = new SessionMap(files.sessionMap)
     // The store fires into the bridge, which is constructed right after.
     let bridgeRef: Bridge | undefined
@@ -643,7 +661,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           .start()
           .then(() =>
             logger.info(
-              `[dsh-tui-feishu] bridge ready for app ${credentials.appId} (card engine: ${config.cardEngine ?? 'cardkit'})`,
+              `[dsh-tui-feishu] bridge ready for app ${credentials.appId} (card engine: ${config.cardEngine ?? 'cardkit'}${config.cardEngineFallback === false ? ', auto-fallback disabled' : (config.cardEngine ?? 'cardkit') === 'cardkit' ? ', auto-fallback to v1 armed' : ''})`,
             ),
           )
           .catch((error: unknown) => {

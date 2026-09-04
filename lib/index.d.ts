@@ -56,6 +56,10 @@ export interface Config {
     readonly outboundFiles?: boolean;
     /** Card engine: `cardkit` (CardKit 2.0 typing, default) or `v1` (message.patch). */
     readonly cardEngine?: 'cardkit' | 'v1';
+    /** Auto-downgrade to the v1 engine once when the first CardKit turn card is
+     *  rejected with a business error (apps without card JSON 2.0 support).
+     *  Default true; false keeps the plain-text fail-safe instead. */
+    readonly cardEngineFallback?: boolean;
     /** Show reasoning/thinking rows on cards (default true). */
     readonly showReasoning?: boolean;
     /** Allowed Feishu sender open ids; empty serves every p2p sender. */
