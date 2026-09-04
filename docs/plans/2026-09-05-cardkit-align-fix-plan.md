@@ -111,11 +111,26 @@ Error/Result 混在一个 `detailOut` 里按状态选一个标签；hermes 用
   只渲染其一），对齐 hermes 语义；
 - 截断上限统一 800→1000（与 `DETAIL_CAPTURE_CHARS` 一致）。
 
-### 2.6 [P2] 不支持卡片 2.0 时的自动降级（默认化后的兜底）
+### 2.6 [P2] 不支持卡片 2.0 时的自动降级（默认化后的兜底）— ✅ 已实现（v0.10.0，commit 3c34bc9）
 
 改法：`startBridge` 首个回合卡 `cardkitCreate`/`cardkitSendToChat` 命中明确
 「能力不支持」错误码时，把该桥的 `cards` 替换为 `StreamingCardManager` 并记日志
 （引擎在桥生命周期内可替换一次）。v1 已可手动兜底，此项为体验优化。
+
+实现（2026-09-05 定稿）：
+
+- 新增 `src/streaming/fallback-card-stream.ts` `FallbackCardStream`：包装引擎选择，
+  全部 `CardStream` 调用委托给当前引擎；`open()` 失败且错误为业务级
+  `FeishuApiError` 时（瞬时码 2200/1663/300000/99991400 与网络错误已在 transport
+  `withTransientRetry` 内重试，能冒出来的都是平台级永久拒绝）→ 记录日志、
+  dispose 旧 CardKit manager、`fallback()` 工厂建 v1 manager、重试同一次 `open()`。
+- 仅第一个回合卡触发、整桥生命周期至多换一次；`cardEngineFallback: false`
+  （默认 true）保留旧 fail-safe（纯文本）。
+- `src/index.ts`：默认 cardkit 且 fallback 未关时包一层；启动日志标注
+  `auto-fallback to v1 armed`。
+- 测试 `test/fallback.mjs` 5 例：业务拒绝→换 v1 且回合卡仍开；至多换一次；关掉
+  fallback 时错误透传；网络型错误不换引擎；换后 v1 再被业务拒绝时透传不二次换。
+  `npm run verify` 全绿。
 
 ### 2.7 [P3] 视觉/结构细节（hermes builder）
 
@@ -125,6 +140,72 @@ Error/Result 混在一个 `detailOut` 里按状态选一个标签；hermes 用
 - streaming 占位卡从「全元素预置」改为「loading 优先、按内容到达渐进加元素」
   （hermes `_do_create_card` 只放 loading，随后 add_elements）——观感最接近 hermes，
   但改动面最大，涉及 open()/apply() 结构，放最后。
+
+## 2.8 设计定稿：P2.3 多段思考 / 拆卡 / 2.7 渐进建卡 = 一次统一重构（2026-09-05）
+
+三者互相咬合（真实时序交错需要按到达顺序渐进加元素；加元素才谈得上 180 预算与
+拆卡），合成一次 cardkit-builder + cardkit-manager 重构，逐个验收。基线对照
+hermes：`segments.py`（reasoning/tool/answer 扁平段、事件序建段）、
+`segment_helper.py`（ELEMENT_THRESHOLD=180、FOOTER_RESERVE=2、
+`build_add_segment_action` 全部 `insert_before` loading 元素）、
+`controller.py _do_split_card`（flush 已挂 actions → 封旧卡 → 建新卡继续）。
+
+### 2.8.1 统一行模型 → 段模型（builder）
+
+- `deriveLayout(rows)`：按行序把 rows 切段——连续 think 行→reasoning 段、
+  连续 tool 行→tool 段（每段独立 element_id、独立序号）；段只增不改边界
+  （bridge 只在末尾追加行），所以序号跨 snapshot 稳定。
+- element_id：reasoning 段 `reasoning_panel_${i}` + 内层文本
+  `reasoning_text_${i}`（每段独立文本预算，各自 truncate 2400 +
+  「…（更多内容略）」尾注）；tool 段 `tool_panel_${j}`；answer 元素
+  `streaming_content`；loading 元素 `loading_icon`（新增常量，作插入锚点）。
+- reasoning 面板标题/耗时按段：段开 →「💭 思考中」，段闭 → 段内行耗时合计
+  「💭 思考 · 12.3s」；终态卡与流式卡同一函数。
+- 终态卡（complete）按段序交错渲染 reasoning/tool（不再「唯一 reasoning 面板
+  压顶 + 唯一 tool 面板」），answer 分块在其后，hr + footer + 详情按钮照旧。
+- 折叠箭头 + i18n_content 双语（`zh_cn`/`en_us` + config.locales）随本重构进入
+  collapsiblePanel；工具面板总耗时在全部 steps 带 durationMs 时显示。
+
+### 2.8.2 渐进建卡（P2.7）+ 流式 diff（manager）
+
+- `open()` 只建：loading 图标 + Stop 按钮（保留桥的中断能力），不预置任何面板。
+- 每次 flush 按 layout 逐段核对：缺面板→`add_elements`（`insert_before` 指向
+  `loading_icon`，按到达顺序自然排列）；reasoning 段文本变化→`cardElement.content`
+  推全段文本（沿用现语义：替换式推送）；段由开转闭→`partial_update_element` 改本
+  段 header 标题带耗时；tool 段行变化→整体 `partial_update_element`。
+- 首个非空正文到达时才加 answer 元素（占位 ' '）并开始流式；流式失败沿用
+  best-effort + `streamClosed` 停推（200850/300309）；结构失败 retire 卡不变。
+
+### 2.8.3 拆卡（迭代记录 §3-3 的 P2 背景项，验收口径补齐）
+
+- 预算：`ELEMENT_THRESHOLD = 180`（平台硬上限 200，留 20 给 footer/波动）、
+  `FOOTER_RESERVE = 2`，与 hermes 一致；元素数按新增子树 JSON 内带 `tag` 的节点
+  数估算（reasoning 段 =4、每 tool step =3+detail 2+output 2 与 hermes 估算同源，
+  用通用递归计数实现，天然覆盖嵌套 icon）。
+- 触发：某 flush 中「当前卡已创建元素数 + 待加段估算 + FOOTER_RESERVE > 180」，
+  且该卡元素数 >1（首卡刚建不算）→ 拆：先发掉本 flush 已挂 actions → 用已建段 +
+  当前完整内容封旧卡（closeStreaming + full update，无 footer、带「前段已封存」
+  灰色尾注、无按钮）→ 建新流式卡（loading + Stop，`slotBase` = 未建段起点，
+  内容游标 = 当前完整内容）→ 未建段落到新卡继续。建新卡失败→
+  `splitDisabled` 降级继续写旧卡（hermes 同款，避免反复撞同一边界）。
+- 内容续写：answer 只在旧卡上滚到封存点；新卡从封存点之后的增量续推
+  （content 前缀不匹配的改写场景整段重推一次，容忍重复）。
+- 终态：只在当前尾卡 closeStreaming + full update（窗口化内容与窗口内行）；
+  封存旧卡保持静态。🔍 详情 refresh 同样只重建尾卡窗口；多卡回合里旧卡不提供
+  展开切换（封存卡无按钮）。
+- 验收：单回合工具/思考段数逼近 200 元素（构造 60+ 工具段场景）→ 飞书端出现
+  第二张续卡、旧卡封存完整、无 300305 元素超限错误；`/stop` 与详情按钮作用在
+  最新卡；终态不丢字（跨卡拼接检查）。
+- 遗留取舍（记录在案）：封存瞬间仍 running 的 tool 行、封存时仍开着的 reasoning
+  段的后续增量不再更新（hermes 对 `i < split_index` 的段同样跳过）；正常回合
+  （远低于 180）不受影响。
+
+### 2.8.4 实施顺序与验证
+
+1. builder 段模型 + 终态卡按序渲染；2. manager 渐进建卡 + 段级流式；
+3. 预算计数 + 拆卡续写；4. 更新 `test/cardkit.mjs`（含段序、拆卡假 transport
+   计数测试）+ `scripts/cardkit-lifecycle-smoke.mjs`（先 add 再 stream 的新语义）；
+  每步 `npm run verify` 全绿后提交；5. 文档/版本收尾。
 
 ## 3. 验收与回归（P1 已全绿：npm run verify）
 
