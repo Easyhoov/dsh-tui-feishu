@@ -17,9 +17,16 @@ jobs:
       # validate-manifest.mjs resolves the Community v0.15 schema from a
       # sibling `dsh-ecosystem-spec` checkout (two levels above the repo);
       # vendor/dsh-std is a submodule pinning the manifest schema.
+      # NOTE (2026-09-05): upstream T-Auto/dsh-ecosystem-spec restructured
+      # (submodule moved to old/vendor/dsh-std, root now docs/assets) — the
+      # main branch no longer carries vendor/dsh-std. Pin the last pre-restructure
+      # commit 9979faa (v0.15 schema inside) until the manifest migrates to the
+      # new spec layout.
       - name: Fetch dsh-ecosystem-spec (schema + registries)
         run: |
           git clone --depth 1 https://github.com/T-Auto/dsh-ecosystem-spec.git "${{ github.workspace }}/../../dsh-ecosystem-spec"
+          git -C "${{ github.workspace }}/../../dsh-ecosystem-spec" fetch --depth 1 origin 9979faa
+          git -C "${{ github.workspace }}/../../dsh-ecosystem-spec" checkout 9979faa
           git -C "${{ github.workspace }}/../../dsh-ecosystem-spec" submodule update --init --depth 1 vendor/dsh-std
 
       - uses: actions/setup-node@v5
