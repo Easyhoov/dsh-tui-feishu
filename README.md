@@ -21,6 +21,10 @@ Feishu (Lark) remote-control surface for [dsh-TUI](https://github.com/ccch1mneyy
   │                                 │
   │  🔐 Approval needed: bash       <│  高风险操作
   │  [✅ Allow once] [❌ Reject]    │  ── 点按钮，turn 继续
+  │                                 │
+  │  ❓ 需要你确认: 修复范围?        <│  ask_user_question（模型问问题）
+  │  [P2 全部 + P3 一起修（推荐）]  │  ── 点选项 / 直接打字回答
+  │  [只修 P2 三项] [✎ 自定义]      │  ── 答完模型继续干活
 ```
 
 ## 安装
@@ -67,6 +71,9 @@ dsh plugin --profile dsh-tui add file:dsh-tui-feishu-0.3.1.tgz
 飞书里私聊机器人：
 
 - 发任何消息 = 给 agent 下指令，回复以流式卡片实时更新（思考/工具行 + 正文 + ⏹ Stop 按钮）
+- agent 调用 `ask_user_question` 提问时弹出 **❓ 问卷卡片**：点选项即答；
+  多选先点选再按「✅ 完成选择」；也可以**直接回复文字**作为答案（完全匹配选项
+  文字按选项计，其他作为自定义回答）。TUI 里发起的提问仍走 TUI 面板，互不抢答
 - `/new` 开新会话（旧会话留在磁盘上）；`/status` 看桥接状态；`/help` 帮助
 - 会话跨重启持久化：`$DSH_HOME/dsh-tui-feishu/session-map.json` 记录 飞书会话 ↔ dsh session 绑定，重启后自动 `agents.resume()` 恢复
 
@@ -85,6 +92,9 @@ TUI 里：
                                                                     │
 流式卡片 <── CardStream 引擎 <── session/event 流（chunk/tool/turn/end）
 审批卡片 <── Allow/Reject 按钮 ── approval/request 瀑布（只接自己的 agent）
+问卷卡片 <── 选项按钮/文字 ── userQuestions 单席位（接过 TUI 的 legacy seat，
+                                按 agent 路由：桥接会话 → 飞书卡片；
+                                TUI/向导问题 → 委派回原 provider 面板）
 ```
 
 卡片引擎二选一（`cardEngine` 配置，默认 `cardkit`）：
@@ -98,7 +108,8 @@ TUI 里：
 - **`v1`**：`im.v1.message.patch` 全卡节流合并更新——兼容性兜底
 
 - `src/transport.ts` — Lark 传输层（`WSClient` 长连接 + `Client` REST + `registerApp` 扫码配对 + CardKit API）
-- `src/bridge.ts` — 编排：消息→会话投递、session 事件→卡片折叠、审批/停止/详情/会话切换按钮路由、白名单
+- `src/bridge.ts` — 编排：消息→会话投递、session 事件→卡片折叠、审批/停止/详情/会话切换按钮路由、ask_user_question 问答批、白名单
+- `src/user-questions.ts` — userQuestions seat 交接（结构性捕获 incumbent + 委派）与问卷卡构建（纯函数，可单测）
 - `src/cards.ts` — v1 卡片构建 + 节流合并的流式 patch 管线（`CardStream` 接口定义）
 - `src/streaming/` — CardKit 2.0 引擎：`cardkit-builder.ts`（schema 2.0 构建）+ `cardkit-manager.ts`（流式生命周期）
 - `src/redact.ts` / `src/cardmd.ts` / `src/i18n.ts` / `src/tools.ts` — 脱敏、markdown 优化、双语文案、工具描述符
@@ -109,6 +120,9 @@ TUI 里：
 
 - **白名单**：默认只服务扫码创建者（`allowedUsers` 配置可扩展）；飞书侧按钮回调同样校验操作者 open_id
 - **审批不会自动通过**：bridge 只回答自己创建的 agent 的 `approval/request`，其余 `next()` 下放给 TUI 自己的审批面板；无应答者时宿主按 fail-closed 处理
+- **问卷不会答错门**：userQuestions 单席位被桥接管后，只有桥接会话的 `ask_user_question`
+  变成飞书卡片；TUI 面板发起的提问与无 agent 的向导提问原样委派给被捕获的
+  incumbent provider（TUI 面板），两边互不抢答；席位在桥停用时原样归还
 - **凭据不落浏览器**：App Secret 只存在本机文件（0600，尽力而为）；二维码链接一次性、10 分钟过期
 - **工具详情脱敏**：工具参数/结果在上卡前经过脱敏（`key=secret`、`Authorization` 头、`--flag secret`、路径只留 basename），凭证不会出现在流式卡片或审批卡片上
 - **消息删除/撤回守卫**：patch 命中删除/撤回错误码后立即退休该卡片并转纯文本兜底，不会对不存在的消息无限重试

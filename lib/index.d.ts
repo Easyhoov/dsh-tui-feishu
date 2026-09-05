@@ -3,8 +3,9 @@
  *
  * Feishu (Lark) as a remote-control surface for a dsh-TUI host: a Feishu
  * private chat maps to a persistent dsh session, replies stream back as one
- * live card per turn, approval requests become Allow/Reject cards, and the
- * ⏹ Stop button cancels the running turn.
+ * live card per turn, approval requests become Allow/Reject cards,
+ * `ask_user_question` becomes Feishu answer cards, and the ⏹ Stop button
+ * cancels the running turn.
  *
  * Setup is scan-to-pair: `/feishu pair` in the TUI shows a QR (official
  * Device-Authorization-Grant bootstrap); the scanning user becomes the
@@ -13,8 +14,9 @@
  *
  * The plugin is a dsh-native cordis plugin admitted to the dsh-TUI ecosystem
  * (dsh-plugin.json, Community v0.15): it drives only public host surfaces
- * (`agents`, `session/event`, `approval/request`, `commands`) and needs no
- * public IP - one outbound WebSocket long connection carries both directions.
+ * (`agents`, `session/event`, `approval/request`, `userQuestions`, `commands`)
+ * and needs no public IP - one outbound WebSocket long connection carries
+ * both directions.
  *
  * Refactored from PGZXB/dsh-feishu (MIT).
  */

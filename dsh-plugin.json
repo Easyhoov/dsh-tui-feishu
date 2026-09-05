@@ -58,7 +58,7 @@
     {
       "target": "x-ccch1mneyyy.tui.host-services",
       "kind": "patch",
-      "description": "驱动 Community v0.15 契约之外的 dsh 框架服务：agents（create/resume/followup/cancel）、session/event 订阅、approval/request 瀑布（只回答本桥接的 agent，其余 next() 下放）、agentPresets 与 agentDefaultModel（均为软探测，缺失时降级）。网络面：仅出站长连接 + REST 到飞书开放平台，不开入站端口；配对时一次性尝试打开系统浏览器，失败则把链接作为命令文本返回。"
+      "description": "驱动 Community v0.15 契约之外的 dsh 框架服务：agents（create/resume/followup/cancel）、session/event 订阅、approval/request 瀑布（只回答本桥接的 agent，其余 next() 下放）、userQuestions 单席位（接过 legacy registerProvider seat：桥接 agent 的 ask_user_question 渲染飞书问卷卡片，其余提问委派回被捕获的 incumbent provider，停用时归还席位）、agentPresets 与 agentDefaultModel（均为软探测，缺失时降级）。网络面：仅出站长连接 + REST 到飞书开放平台，不开入站端口；配对时一次性尝试打开系统浏览器，失败则把链接作为命令文本返回。"
     }
   ],
   "compat": {

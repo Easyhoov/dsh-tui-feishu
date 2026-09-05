@@ -11,9 +11,11 @@
 清单静态声明了全部入口：
 
 - **requires**：`commands.dsh/v1alpha1` `Command`（注册 `/feishu` 状态与配对命令，TUI 可直接解析）。
-- **permissions**：`commands.invoke`（/feishu 命令）、`storage.local.read`/`storage.local.write`（插件命名空间 `$DSH_HOME/dsh-tui-feishu/`）、`messages.observe.read`（仅本桥接拥有的会话）。未声明任何 `*.intercept` 权限——本插件不拦截用户输入/回退/切换/压缩。
+- **permissions**：`commands.invoke`（/feishu 命令）、`storage.local.read`/`storage.local.write`（插件命名空间 `$DSH_HOME/dsh-tui-feishu/`）、`messages.observe.read`（仅本桥接拥有的会话）。未声明任何 `*.intercept` 权限——本插件不拦截用户输入/回退/切换/压缩；唯一输入消费点是「有未决 ask_user_question 问卷时，把下一条文字当作问卷回答」（问卷卡上已明示此行为，等同 TUI 面板打字即答语义）。
 - **contributes**：一个命令 `io.github.fusu123fusu.dsh-tui-feishu.status`。
-- **overrides**：Community 契约之外的框架面（agents、session/event、approval/request、agentPresets/agentDefaultModel 软探测）与网络面集中记录在 `x-ccch1mneyyy.tui.host-services` 一条 override 里，无旁路注入。
+- **overrides**：Community 契约之外的框架面（agents、session/event、approval/request、
+  userQuestions 单席位交接、agentPresets/agentDefaultModel 软探测）与网络面集中记录在
+  `x-ccch1mneyyy.tui.host-services` 一条 override 里，无旁路注入。
 
 ## TUI-HOST-001 宿主描述符
 
@@ -34,6 +36,9 @@
 
 - `/feishu` 命令注册（`ctx.effect` 包裹）；
 - `session/event` 监听器、`approval/request` 瀑布应答器（外源 agent 一律 `next()` 下放）；
+- userQuestions 单席位租约（`installUserQuestionsProvider`：结构捕获 incumbent →
+  替换 `service.provider` → 桥停用时原样归还；未决 `ask_user_question` 批全部以
+  `ASK_ABORTED` 拒绝，卡片灰化收尾）；
 - 飞书 WebSocket 长连接（`transport.stop()`）；
 - 流式卡片节流定时器（card manager `dispose()`）；
 - 提醒定时器（ReminderStore `dispose()`）；
@@ -43,7 +48,12 @@
 
 ## TUI-DEP-001 依赖闭包
 
-`npm run verify` = 构建（tsc）+ 清单校验 + 冒烟测试（36 项断言，fake transport/agent 端到端覆盖消息流、审批、详情展开、提醒触发）。运行时依赖只有一个：`@larksuiteoapi/node-sdk`（MIT，官方）；框架包以 peerDependencies 声明由宿主提供。无 native/build step、无 override 依赖替换。
+`npm run verify` = 构建（tsc）+ 清单校验 + 测试（node:test 各套件，fake transport/agent
+端到端覆盖消息流、审批、ask_user_question 问卷卡、详情展开、提醒触发）。运行时依赖只有
+一个：`@larksuiteoapi/node-sdk`（MIT，官方）；框架包以 peerDependencies 声明由宿主提供。
+无 native/build step、无 override 依赖替换。`user-questions` 面不 import
+`@deepseek-ai/dsh-user-questions`（结构性子集 + 软探测），宿主缺该服务时降级为「不支持
+飞书答题」并告警，不影响桥其他能力。
 
 ## TUI-TRUST-001 信任披露
 

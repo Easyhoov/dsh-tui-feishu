@@ -5,7 +5,9 @@
  * (`agent.followup`); dsh session events stream back into the chat as one
  * live streaming card per turn (the card is patched in place - silent, no
  * unread notification). Approval requests for the bridge's own agents
- * become Allow/Reject cards; the Stop button cancels the running turn.
+ * become Allow/Reject cards; `ask_user_question` from a bridge-bound agent
+ * becomes interactive question cards (option buttons, multi-select, and a
+ * type-your-answer fallback); the Stop button cancels the running turn.
  *
  * The bridge never touches agent internals beyond the public surface:
  * create/resume, followup, cancel, and the `session/event` stream.
@@ -20,6 +22,7 @@ import type { CardStream } from './cards.js';
 import { type Reminder, type ReminderStore } from './reminders.js';
 import type { LarkTransport } from './transport.js';
 import type { SessionMap } from './session-map.js';
+import { type UserQuestionAnswerLike, type UserQuestionRequestLike } from './user-questions.js';
 /** Minimal logger surface the bridge needs. */
 export interface BridgeLogger {
     info(message: string): void;
@@ -165,6 +168,8 @@ export declare class Bridge {
     /** Final snapshots per chat, so the detail toggle works on finished cards. */
     private readonly lastSnapshots;
     private readonly approvals;
+    /** Pending user-question batches, one per chat (a chat runs one turn at a time). */
+    private readonly questionBatches;
     private readonly turnDisposers;
     private readonly counters;
     /** Agent ids whose outbound-file tool registration already ran (Feature C). */
@@ -287,6 +292,50 @@ export declare class Bridge {
      * delegates down the chain (`next()`).
      */
     handleApprovalRequest(request: ApprovalRequestLike, next: () => Promise<ApprovalOutcome>): Promise<ApprovalOutcome>;
+    /**
+     * Feishu side of the user-questions seam: present one ask batch as
+     * interactive question cards in `chatId` and settle with the human's
+     * answer. Called by the seat provider only for bridge-bound agents; the
+     * promise parks until every question is answered, the ask is aborted
+     * (Stop/cancel fires the step signal), or the bridge is torn down.
+     */
+    askUserQuestion(chatId: string, request: UserQuestionRequestLike): Promise<UserQuestionAnswerLike>;
+    /**
+     * Run one batch op after every previously queued op (buttons, inbound text
+     * and follow-up presentations share the chain, so the batch state can
+     * never be mutated by two paths at once). Ops never throw; the chain stays
+     * alive for later ops.
+     */
+    private withQuestionOp;
+    /** Reject one pending question batch (signal abort / bridge teardown). */
+    private interruptQuestionBatch;
+    /**
+     * Show the batch's current question card (or its plain-text fallback).
+     * Runs inside the batch op chain; re-checks liveness after each await so
+     * an abort that lands mid-send cannot leave a stray interactive card.
+     */
+    private presentQuestionNow;
+    /**
+     * Record one question's answer, ack it visually, then advance — or settle
+     * the batch when every question is answered. Runs inside the op chain.
+     */
+    private settleQuestionNow;
+    /** Complete a fully answered batch: settle the parked tool promise. */
+    private finishQuestionBatch;
+    /**
+     * Consume one inbound text as the pending question's answer (the fallback
+     * promised on every question card). Returns true when the message was
+     * consumed; exact option-label matches count as that option, anything else
+     * becomes the custom answer. Waits for any in-flight batch op so two quick
+     * texts answer two questions instead of racing on one.
+     */
+    private tryAnswerQuestionText;
+    /**
+     * Route one question-card button callback (choose / done). Guards run
+     * inside the batch op chain: a click that raced an earlier answer can
+     * never settle the wrong question, whatever its arrival order.
+     */
+    private handleQuestionAction;
     /** Route a card-button callback (approval decision, stop, detail toggle, session switch). */
     private handleCardAction;
 }

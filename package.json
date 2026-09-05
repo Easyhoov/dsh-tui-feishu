@@ -1,7 +1,7 @@
 {
   "name": "dsh-tui-feishu",
-  "version": "0.9.0",
-  "description": "Feishu (Lark) remote-control surface for dsh-TUI: chat with your local agent from Feishu, scan-to-pair QR setup, streaming reply cards, in-card approvals",
+  "version": "0.10.1",
+  "description": "Feishu (Lark) remote-control surface for dsh-TUI: chat with your local agent from Feishu, scan-to-pair QR setup, streaming reply cards, in-card approvals, ask_user_question answer cards",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -22,7 +22,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node test/smoke.mjs && node test/redact.mjs && node test/robustness.mjs && node test/cards-p1.mjs && node test/cardkit.mjs && node test/fallback.mjs && node test/images.mjs && node test/files.mjs && node test/reply.mjs && node test/reply-guard.mjs && node test/watchdog.mjs && node test/history.mjs && node test/image-fallback.mjs && node test/outbound-files.mjs",
+    "test": "node test/smoke.mjs && node test/redact.mjs && node test/robustness.mjs && node test/cards-p1.mjs && node test/cardkit.mjs && node test/fallback.mjs && node test/images.mjs && node test/files.mjs && node test/reply.mjs && node test/reply-guard.mjs && node test/watchdog.mjs && node test/history.mjs && node test/image-fallback.mjs && node test/outbound-files.mjs && node test/user-questions.mjs",
     "validate:manifest": "node scripts/validate-manifest.mjs",
     "verify": "npm run build && npm run validate:manifest && npm test"
   },

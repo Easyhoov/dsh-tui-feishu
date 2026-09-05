@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.10.1 (2026-09-05)
+
+### 修复：注册 provider 时方法解绑导致启动崩溃
+
+- **症状**：v0.10.0 装入后 dsh-tui 启动即崩：`TypeError: Cannot read
+  properties of undefined (reading 'ctx')`，堆栈在
+  `installUserQuestionsProvider → registerProvider`（
+  `@deepseek-ai/dsh-user-questions/lib/index.js:32`）。
+- **根因**：`const register = service.registerProvider; register(provider)`
+  —— 方法引用**解绑调用**，ESM 严格模式下 `this = undefined`，
+  而 `registerProvider` 内部读取 `this.ctx`（cordis Service 注入）。
+- **修复**：改为直接 `service.registerProvider(provider)`（保 this）。
+- **验证**：`npm run verify` 20/20 全绿；profile 重装后桥
+  `bridge ready` + `feishu long connection ready` 两行确认，MCP 8091 正常。
+- **教训（dsh 写宿主服务调用时）**：凡通过 `const f = service.method` 取方法
+  再调用的写法都要检查 this 绑定——要么 `service.method(...)` 直调，要么
+  `f.call(service, ...)`。
+
+## 0.10.0 (2026-09-05)
+
+### ask_user_question 死锁修复：飞书问卷卡片（详见 docs/2026-09-05-ask-user-question-stuck-diagnosis.md）
+
+- **根因**：模型调用 `ask_user_question` 后 `UserQuestionService.ask()` 挂起在唯一
+  UI provider（TUI 的 QuestionStore 面板）上等人回答，飞书用户看不见也点不了 →
+  当前回合永不结束 → 后续消息永远排队。桥 0.9.0 之前对 userQuestions 零处理。
+- **seat 交接 + 委派**：桥把 legacy 单席位从 TUI 手里结构性接过（DUPLICATE_PROVIDER
+  时捕获 incumbent 并替换 `service.provider`，dispose 还原席位），席位实现按 agent
+  路由：**桥接会话的问题 → 飞书卡片**（选项按钮 + 完成按钮 + 直接回复文字兜底）；
+  **TUI/向导等非桥接问题 → 委派回 incumbent**（TUI 面板原样工作，两扇门各答各的
+  问题，互不抢答）。
+- **问答卡生命周期**：一次 ask 的多问题逐张卡片顺序呈现；单选 = 点选项即答，
+  多选 = 点选高亮 + 「✅ 完成选择」，无卡片能力时降级纯文本提问并在收到文字后
+  回执；Stop/取消 → `ASK_ABORTED` 拒绝并灰卡收尾；每聊天的操作经串行链执行，
+  迟到点击不会答错题；卡片发送失败自动走文字兜底。
+- **文本兜底**：问卷卡上明示「直接回复文字即可作为答案」；完全匹配选项文字按
+  选项计，其余按自定义回答计入（同 TUI 面板语义）。
+
+### 工程
+- 新增 `test/user-questions.mjs`（20 项 node:test：seat 交接、卡片构建、单选/
+  多选/多题/中止/兜底/越权/迟到点击）；`npm run verify` 全绿。
+
 ## 0.9.0 (2026-09-05)
 
 ### CardKit 展示对齐 hermes-lark-streaming（计划 docs/plans/2026-09-05-cardkit-align-fix-plan.md 的 P1）

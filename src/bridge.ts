@@ -5,7 +5,9 @@
  * (`agent.followup`); dsh session events stream back into the chat as one
  * live streaming card per turn (the card is patched in place - silent, no
  * unread notification). Approval requests for the bridge's own agents
- * become Allow/Reject cards; the Stop button cancels the running turn.
+ * become Allow/Reject cards; `ask_user_question` from a bridge-bound agent
+ * becomes interactive question cards (option buttons, multi-select, and a
+ * type-your-answer fallback); the Stop button cancels the running turn.
  *
  * The bridge never touches agent internals beyond the public surface:
  * create/resume, followup, cancel, and the `session/event` stream.
@@ -28,6 +30,19 @@ import type { PlatformMessage, ReplyUnavailableReason } from './reply-reference.
 import { resolveToolDescriptor } from './tools.js'
 import type { FeishuCardAction, FeishuMessage, LarkTransport } from './transport.js'
 import type { SessionMap } from './session-map.js'
+import {
+  buildQuestionCancelledBody,
+  buildQuestionCardBody,
+  buildQuestionPlainText,
+  buildQuestionSettledBody,
+  createQuestionError,
+  QUESTION_ABORTED,
+  summarizeAnswer,
+  type UserQuestionAnswerItemLike,
+  type UserQuestionAnswerLike,
+  type UserQuestionLike,
+  type UserQuestionRequestLike,
+} from './user-questions.js'
 
 /** Minimal logger surface the bridge needs. */
 export interface BridgeLogger {
@@ -186,6 +201,35 @@ interface PendingApproval {
   settled: boolean
 }
 
+/**
+ * A pending `ask_user_question` batch being answered in one Feishu chat:
+ * questions are presented one card at a time (the tool blocks until the
+ * whole batch is answered), each settled by an option-button click or by the
+ * human typing a reply in the chat.
+ */
+interface PendingQuestionBatch {
+  readonly chatId: string
+  readonly questions: readonly UserQuestionLike[]
+  /** Abort signal of the parked tool step; fires on Stop/cancel. */
+  readonly signal?: AbortSignal
+  /** Index of the question currently shown. */
+  index: number
+  /** Answers collected so far, in question order. */
+  readonly answers: UserQuestionAnswerItemLike[]
+  /** Message id of the current question card (`undefined` when it fell back to text). */
+  cardMessageId: string | undefined
+  /** The current question card could not be sent (plain-text fallback mode). */
+  cardFailed: boolean
+  /** Labels toggled for the current multi-select question. */
+  readonly toggled: Set<string>
+  /** Serialization chain: answers/presents run one op at a time per chat. */
+  op: Promise<void>
+  resolve: (answer: UserQuestionAnswerLike) => void
+  reject: (error: Error) => void
+  settled: boolean
+  onAbort: () => void
+}
+
 /** Cap the in-memory dedup window (Feishu redelivers on reconnect). */
 const DEDUP_MAX = 512
 /** Card title cut-off. */
@@ -322,6 +366,8 @@ export class Bridge {
   /** Final snapshots per chat, so the detail toggle works on finished cards. */
   private readonly lastSnapshots = new Map<string, CardSnapshot>()
   private readonly approvals = new Map<string, PendingApproval>()
+  /** Pending user-question batches, one per chat (a chat runs one turn at a time). */
+  private readonly questionBatches = new Map<string, PendingQuestionBatch>()
   private readonly turnDisposers: (() => void)[] = []
   private readonly counters = { received: 0, delivered: 0, dropped: 0 }
   /** Agent ids whose outbound-file tool registration already ran (Feature C). */
@@ -427,6 +473,10 @@ export class Bridge {
       if (!pending.settled) pending.resolve('cancelled')
     }
     this.approvals.clear()
+    for (const batch of this.questionBatches.values()) {
+      this.interruptQuestionBatch(batch, 'bridge disposed')
+    }
+    this.questionBatches.clear()
     this.queuedTurns.clear()
     this.options.cards.dispose()
   }
@@ -487,6 +537,12 @@ export class Bridge {
     this.counters.delivered += 1
     if (text.startsWith('/')) {
       await this.handleCommand(message.chatId, text)
+      return
+    }
+    // A pending ask_user_question consumes the next text as its answer
+    // (button-free fallback promised on the question card).
+    if (await this.tryAnswerQuestionText(message.chatId, text)) {
+      this.options.logger.info(`inbound text for chat ${message.chatId} consumed as a user-question answer`)
       return
     }
     // Feature F: keep user turns in the rolling transcript too.
@@ -1633,6 +1689,254 @@ export class Bridge {
     })
   }
 
+  /**
+   * Feishu side of the user-questions seam: present one ask batch as
+   * interactive question cards in `chatId` and settle with the human's
+   * answer. Called by the seat provider only for bridge-bound agents; the
+   * promise parks until every question is answered, the ask is aborted
+   * (Stop/cancel fires the step signal), or the bridge is torn down.
+   */
+  askUserQuestion(chatId: string, request: UserQuestionRequestLike): Promise<UserQuestionAnswerLike> {
+    return new Promise<UserQuestionAnswerLike>((resolve, reject) => {
+      const busy = this.questionBatches.get(chatId)
+      if (busy !== undefined && !busy.settled) {
+        reject(
+          createQuestionError(
+            'another ask_user_question is already pending in this chat; wait for it to be answered first',
+            'ASK_IN_PROGRESS',
+          ),
+        )
+        return
+      }
+      const batch: PendingQuestionBatch = {
+        chatId,
+        questions: request.questions,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+        index: 0,
+        answers: [],
+        cardMessageId: undefined,
+        cardFailed: false,
+        toggled: new Set(),
+        op: Promise.resolve(),
+        resolve,
+        reject,
+        settled: false,
+        onAbort: () => {},
+      }
+      batch.onAbort = () => {
+        if (batch.settled) return
+        this.interruptQuestionBatch(batch, 'ask signal aborted')
+      }
+      batch.signal?.addEventListener('abort', batch.onAbort, { once: true })
+      this.questionBatches.set(chatId, batch)
+      void this.withQuestionOp(batch, () => this.presentQuestionNow(batch))
+    })
+  }
+
+  /**
+   * Run one batch op after every previously queued op (buttons, inbound text
+   * and follow-up presentations share the chain, so the batch state can
+   * never be mutated by two paths at once). Ops never throw; the chain stays
+   * alive for later ops.
+   */
+  private async withQuestionOp(batch: PendingQuestionBatch, op: () => Promise<void>): Promise<void> {
+    const next = batch.op.then(op, op)
+    batch.op = next.then(
+      () => {},
+      (error: unknown) => {
+        this.options.logger.error(`question op failed: ${String(error)}`)
+      },
+    )
+    await next
+  }
+
+  /** Reject one pending question batch (signal abort / bridge teardown). */
+  private interruptQuestionBatch(batch: PendingQuestionBatch, why: string): void {
+    if (batch.settled) return
+    batch.settled = true
+    this.questionBatches.delete(batch.chatId)
+    batch.signal?.removeEventListener('abort', batch.onAbort)
+    this.options.logger.info(`user question for chat ${batch.chatId} interrupted (${why})`)
+    const question = batch.questions[batch.index]
+    if (question !== undefined && batch.cardMessageId !== undefined) {
+      // Best-effort visual close; never breaks the rejection path.
+      void this.options.transport
+        .updateCard(batch.cardMessageId, buildQuestionCancelledBody(question))
+        .catch((error: unknown) => {
+          this.options.logger.warn(`question cancel card update failed: ${String(error)}`)
+        })
+    }
+    batch.reject(createQuestionError('ask_user_question was interrupted before the user answered', QUESTION_ABORTED))
+  }
+
+  /**
+   * Show the batch's current question card (or its plain-text fallback).
+   * Runs inside the batch op chain; re-checks liveness after each await so
+   * an abort that lands mid-send cannot leave a stray interactive card.
+   */
+  private async presentQuestionNow(batch: PendingQuestionBatch): Promise<void> {
+    if (batch.settled) return
+    const question = batch.questions[batch.index]
+    if (question === undefined) {
+      // All questions answered (or none were given): settle the batch.
+      this.finishQuestionBatch(batch)
+      return
+    }
+    batch.toggled.clear()
+    batch.cardMessageId = undefined
+    let messageId: string | undefined
+    try {
+      messageId = await this.options.transport.sendCard(batch.chatId, buildQuestionCardBody(question))
+    } catch (error: unknown) {
+      // Interactive card refused: degrade to plain text — the answer still
+      // arrives through the text path (fix-direction fallback).
+      batch.cardFailed = true
+      this.options.logger.warn(`question card send failed (falling back to text): ${String(error)}`)
+      await this.options.transport.sendText(batch.chatId, buildQuestionPlainText(question)).catch(() => {})
+      return
+    }
+    if (batch.settled) {
+      // Aborted while the card was in flight: retire it immediately so the
+      // chat does not keep an interactive card nobody can answer.
+      void this.options.transport
+        .updateCard(messageId, buildQuestionCancelledBody(question))
+        .catch(() => {})
+      return
+    }
+    batch.cardMessageId = messageId
+    this.options.logger.info(
+      `user question ${question.id} of chat ${batch.chatId} presented (card ${messageId})`,
+    )
+  }
+
+  /**
+   * Record one question's answer, ack it visually, then advance — or settle
+   * the batch when every question is answered. Runs inside the op chain.
+   */
+  private async settleQuestionNow(
+    batch: PendingQuestionBatch,
+    selection: { readonly selected: readonly string[]; readonly custom?: string },
+  ): Promise<void> {
+    if (batch.settled) return
+    const question = batch.questions[batch.index]
+    if (question === undefined) return
+    const answer: UserQuestionAnswerItemLike = {
+      id: question.id,
+      selected: [...selection.selected],
+      ...(selection.custom !== undefined && selection.custom !== '' ? { custom: selection.custom } : {}),
+    }
+    batch.answers.push(answer)
+    const text = summarizeAnswer(answer)
+    if (batch.cardMessageId !== undefined) {
+      try {
+        await this.options.transport.updateCard(batch.cardMessageId, buildQuestionSettledBody(question, text))
+      } catch (error: unknown) {
+        this.options.logger.warn(`question card settle update failed: ${String(error)}`)
+      }
+    } else if (batch.cardFailed) {
+      // No interactive card is open: ack by text so the human sees the
+      // answer registered before the agent continues.
+      await this.options.transport.sendText(batch.chatId, `✅ 已收到：${text}`).catch(() => {})
+    }
+    if (batch.settled) return // aborted while the ack was in flight
+    batch.index += 1
+    if (batch.index >= batch.questions.length) {
+      this.finishQuestionBatch(batch)
+      return
+    }
+    await this.presentQuestionNow(batch)
+  }
+
+  /** Complete a fully answered batch: settle the parked tool promise. */
+  private finishQuestionBatch(batch: PendingQuestionBatch): void {
+    if (batch.settled) return
+    batch.settled = true
+    this.questionBatches.delete(batch.chatId)
+    batch.signal?.removeEventListener('abort', batch.onAbort)
+    batch.resolve({ answers: [...batch.answers] })
+  }
+
+  /**
+   * Consume one inbound text as the pending question's answer (the fallback
+   * promised on every question card). Returns true when the message was
+   * consumed; exact option-label matches count as that option, anything else
+   * becomes the custom answer. Waits for any in-flight batch op so two quick
+   * texts answer two questions instead of racing on one.
+   */
+  private async tryAnswerQuestionText(chatId: string, text: string): Promise<boolean> {
+    const batch = this.questionBatches.get(chatId)
+    if (batch === undefined || batch.settled) return false
+    await batch.op.catch(() => {})
+    if (batch.settled) return false
+    const question = batch.questions[batch.index]
+    if (question === undefined) return false
+    const normalized = text.trim().replace(/\s+/g, ' ')
+    const options = question.options ?? []
+    const exact = options.find(option => option.label.trim().replace(/\s+/g, ' ') === normalized)
+    const selection =
+      exact !== undefined
+        ? { selected: [exact.label] }
+        : { selected: [], custom: text.trim() }
+    await this.withQuestionOp(batch, () => this.settleQuestionNow(batch, selection))
+    return true
+  }
+
+  /**
+   * Route one question-card button callback (choose / done). Guards run
+   * inside the batch op chain: a click that raced an earlier answer can
+   * never settle the wrong question, whatever its arrival order.
+   */
+  private async handleQuestionAction(action: FeishuCardAction): Promise<void> {
+    const batch = this.questionBatches.get(action.chatId)
+    if (batch === undefined || batch.settled) return
+    const sub = action.value['action']
+    const option = action.value['option']
+    const qid = action.value['qid']
+    if ((sub !== 'choose' && sub !== 'done') || qid === undefined || qid === '') return
+    const expectedMessageId = action.messageId
+    const operatorOpenId = action.operatorOpenId
+    await this.withQuestionOp(batch, async () => {
+      if (batch.settled) return
+      // Stale click (card already answered/retired): ignore.
+      if (batch.cardMessageId !== expectedMessageId) return
+      if (!this.senderAllowed(operatorOpenId)) {
+        this.options.logger.warn(`question button from unauthorized operator ${operatorOpenId} ignored`)
+        return
+      }
+      const question = batch.questions[batch.index]
+      if (question === undefined || question.id !== qid) return
+      if (question.multiSelect !== true) {
+        // Single-select: the first option click settles the question.
+        if (sub === 'choose' && option !== undefined && option !== '') {
+          await this.settleQuestionNow(batch, { selected: [option] })
+        }
+        return
+      }
+      // Multi-select: option buttons toggle, the done button settles.
+      if (sub === 'choose' && option !== undefined && option !== '') {
+        if (batch.toggled.has(option)) {
+          batch.toggled.delete(option)
+        } else {
+          batch.toggled.add(option)
+        }
+        if (batch.cardMessageId !== undefined) {
+          try {
+            await this.options.transport.updateCard(
+              batch.cardMessageId,
+              buildQuestionCardBody(question, { toggled: batch.toggled }),
+            )
+          } catch (error: unknown) {
+            this.options.logger.warn(`question card toggle update failed: ${String(error)}`)
+          }
+        }
+        return
+      }
+      if (sub === 'done') {
+        await this.settleQuestionNow(batch, { selected: [...batch.toggled] })
+      }
+    })
+  }
+
   /** Route a card-button callback (approval decision, stop, detail toggle, session switch). */
   private async handleCardAction(action: FeishuCardAction): Promise<void> {
     const kind = action.value['kind']
@@ -1692,6 +1996,10 @@ export class Bridge {
       } catch (error: unknown) {
         this.options.logger.warn(`approval card settle failed: ${String(error)}`)
       }
+      return
+    }
+    if (kind === 'question') {
+      await this.handleQuestionAction(action)
       return
     }
     if (kind === 'stop') {
