@@ -24,10 +24,9 @@ jobs:
       # new spec layout.
       - name: Fetch dsh-ecosystem-spec (schema + registries)
         run: |
-          git clone --depth 1 https://github.com/T-Auto/dsh-ecosystem-spec.git "${{ github.workspace }}/../../dsh-ecosystem-spec"
-          git -C "${{ github.workspace }}/../../dsh-ecosystem-spec" fetch --depth 1 origin 9979faa
+          git clone https://github.com/T-Auto/dsh-ecosystem-spec.git "${{ github.workspace }}/../../dsh-ecosystem-spec"
           git -C "${{ github.workspace }}/../../dsh-ecosystem-spec" checkout 9979faa
-          git -C "${{ github.workspace }}/../../dsh-ecosystem-spec" submodule update --init --depth 1 vendor/dsh-std
+          git -C "${{ github.workspace }}/../../dsh-ecosystem-spec" submodule update --init vendor/dsh-std
 
       - uses: actions/setup-node@v5
         with:
